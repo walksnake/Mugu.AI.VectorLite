@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Mugu.AI.VectorLite.SemanticKernel</RootNamespace>
+    <NoWarn>$(NoWarn);SKEXP0001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mugu.AI.VectorLite\Mugu.AI.VectorLite.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SemanticKernel.Abstractions" Version="1.74.0" />
+    <PackageReference Include="Microsoft.SemanticKernel.Core" Version="1.74.0" />
+  </ItemGroup>
+
+</Project>

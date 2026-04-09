@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/examples/">
+    <Project Path="examples/QuickStart/QuickStart.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Mugu.AI.VectorLite.SemanticKernel/Mugu.AI.VectorLite.SemanticKernel.csproj" />
+    <Project Path="src/Mugu.AI.VectorLite/Mugu.AI.VectorLite.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Mugu.AI.VectorLite.QualityGate/Mugu.AI.VectorLite.QualityGate.csproj" />
+    <Project Path="tests/Mugu.AI.VectorLite.Tests/Mugu.AI.VectorLite.Tests.csproj" />
+  </Folder>
+  <Folder Name="/解决方案项/">
+    <File Path="Directory.Build.props" />
+  </Folder>
+</Solution>

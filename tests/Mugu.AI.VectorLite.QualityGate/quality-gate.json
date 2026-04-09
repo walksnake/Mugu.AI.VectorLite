@@ -1,0 +1,8 @@
+{
+  "minRecallAt10": 0.90,
+  "minRecallAt50": 0.95,
+  "minInsertThroughput": 5000,
+  "maxSearchP99Ms": 10,
+  "maxDistanceCalcNs": 500,
+  "toleranceRatio": 0.1
+}
