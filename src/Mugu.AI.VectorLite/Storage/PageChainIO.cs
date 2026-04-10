@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace Mugu.AI.VectorLite.Storage;
 
 /// <summary>
@@ -124,20 +126,26 @@ internal static class PageChainIO
         var offsetInPage = (int)(byteOffset % usable);
         var bytesRead = 0;
 
-        while (bytesRead < destination.Length && pageIndex < chainPageIds.Count)
+        var pageData = ArrayPool<byte>.Shared.Rent(usable);
+        try
         {
-            var pageId = chainPageIds[pageIndex];
-            var availableInPage = usable - offsetInPage;
-            var toRead = Math.Min(destination.Length - bytesRead, availableInPage);
+            while (bytesRead < destination.Length && pageIndex < chainPageIds.Count)
+            {
+                var pageId = chainPageIds[pageIndex];
+                var availableInPage = usable - offsetInPage;
+                var toRead = Math.Min(destination.Length - bytesRead, availableInPage);
 
-            // 读取整页数据区域，取需要的切片
-            var pageData = new byte[usable];
-            storage.ReadPageData(pageId, pageData);
-            pageData.AsSpan(offsetInPage, toRead).CopyTo(destination.Slice(bytesRead, toRead));
+                storage.ReadPageData(pageId, pageData.AsSpan(0, usable));
+                pageData.AsSpan(offsetInPage, toRead).CopyTo(destination.Slice(bytesRead, toRead));
 
-            bytesRead += toRead;
-            pageIndex++;
-            offsetInPage = 0; // 后续页从头开始
+                bytesRead += toRead;
+                pageIndex++;
+                offsetInPage = 0;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pageData);
         }
 
         return bytesRead;

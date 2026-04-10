@@ -28,7 +28,7 @@ jobs:
       run: dotnet build Mugu.AI.VectorLite.slnx --no-restore -c Release
 
     - name: Test
-      run: dotnet test Mugu.AI.VectorLite.slnx --no-build -c Release --logger "trx;LogFileName=results.trx"
+      run: dotnet test Mugu.AI.VectorLite.slnx --no-build -c Release --logger "trx;LogFileName=results.trx" --blame-hang-timeout 5min
 
     - name: Upload test results
       if: always()

@@ -163,7 +163,7 @@ internal static class RecordSerializer
     private static Dictionary<string, object> DeserializeMetadata(byte[] jsonBytes)
     {
         var result = new Dictionary<string, object>();
-        var doc = JsonDocument.Parse(jsonBytes);
+        using var doc = JsonDocument.Parse(jsonBytes);
 
         foreach (var prop in doc.RootElement.EnumerateObject())
         {

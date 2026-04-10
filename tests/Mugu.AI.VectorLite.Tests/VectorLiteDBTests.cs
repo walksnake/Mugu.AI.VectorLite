@@ -138,6 +138,124 @@ public class VectorLiteDBTests : IDisposable
         }
     }
 
+    [Fact]
+    public void MultipleDispose_ShouldNotThrow()
+    {
+        var db = new VectorLiteDB(_dbPath);
+        db.GetOrCreateCollection("test", Dims);
+        db.Dispose();
+        var act = () => db.Dispose();
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task AutoCheckpointTimer_ShouldWork()
+    {
+        var opts = new VectorLiteOptions
+        {
+            CheckpointInterval = TimeSpan.FromMilliseconds(200)
+        };
+        using var db = new VectorLiteDB(_dbPath, opts);
+        var coll = db.GetOrCreateCollection("timer_test", Dims);
+
+        await coll.InsertAsync(new VectorRecord
+        {
+            Vector = Vec(1, 2, 3, 4),
+            Text = "定时器测试"
+        });
+
+        // 等待自动检查点触发
+        await Task.Delay(500);
+
+        // 数据应该已被检查点
+        coll.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public void EmptyDB_Reopen_ShouldWork()
+    {
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            // 创建空数据库，不添加任何集合
+        }
+
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            db.GetCollectionNames().Should().BeEmpty();
+        }
+    }
+
+    [Fact]
+    public async Task DeleteCollection_ShouldPersistAcrossRestart()
+    {
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            var coll = db.GetOrCreateCollection("to_remove", Dims);
+            await coll.InsertAsync(new VectorRecord { Vector = Vec(1, 1, 1, 1) });
+            db.Checkpoint();
+
+            db.DeleteCollection("to_remove");
+            db.Checkpoint();
+        }
+
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            db.CollectionExists("to_remove").Should().BeFalse();
+            db.GetCollectionNames().Should().BeEmpty();
+        }
+    }
+
+    [Fact]
+    public async Task MultipleCollections_ShouldPersistAndReload()
+    {
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            var c1 = db.GetOrCreateCollection("c1", Dims);
+            var c2 = db.GetOrCreateCollection("c2", Dims);
+            await c1.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0), Text = "c1_record" });
+            await c2.InsertAsync(new VectorRecord { Vector = Vec(0, 1, 0, 0), Text = "c2_record" });
+            await c2.InsertAsync(new VectorRecord { Vector = Vec(0, 0, 1, 0) });
+        }
+
+        {
+            using var db = new VectorLiteDB(_dbPath);
+            db.GetCollectionNames().Should().HaveCount(2);
+            var c1 = db.GetOrCreateCollection("c1", Dims);
+            var c2 = db.GetOrCreateCollection("c2", Dims);
+            c1.Count.Should().Be(1);
+            c2.Count.Should().Be(2);
+
+            var r = await c1.GetAsync(1);
+            r!.Text.Should().Be("c1_record");
+        }
+    }
+
+    [Fact]
+    public async Task Checkpoint_MultipleTimes_ShouldBeIdempotent()
+    {
+        using var db = new VectorLiteDB(_dbPath);
+        var coll = db.GetOrCreateCollection("ckpt_idem", Dims);
+        await coll.InsertAsync(new VectorRecord { Vector = Vec(1, 2, 3, 4) });
+
+        // 多次检查点不应丢失数据或抛异常
+        db.Checkpoint();
+        db.Checkpoint();
+        db.Checkpoint();
+
+        coll.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public void GetCollection_ShouldReturnExisting()
+    {
+        using var db = new VectorLiteDB(_dbPath);
+        var c1 = db.GetOrCreateCollection("shared", Dims);
+        var c2 = db.GetOrCreateCollection("shared", Dims);
+
+        // 应该返回同一个集合实例
+        c1.Should().BeSameAs(c2);
+    }
+
     public void Dispose()
     {
         TryDelete(_dbPath);

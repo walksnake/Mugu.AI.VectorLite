@@ -236,6 +236,142 @@ public class CollectionTests : IDisposable
         await act.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task Query_WrongDimensions_ShouldThrow()
+    {
+        await _coll.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) });
+        var act = () => _coll.Query(new float[] { 1, 2, 3 }); // 3维 != 8维
+        act.Should().Throw<DimensionMismatchException>();
+    }
+
+    [Fact]
+    public async Task InsertBatchAsync_WrongDimensions_ShouldThrow()
+    {
+        var records = new List<VectorRecord>
+        {
+            new() { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) },
+            new() { Vector = new float[3] } // 错误维度
+        };
+
+        var act = () => _coll.InsertBatchAsync(records);
+        await act.Should().ThrowAsync<DimensionMismatchException>();
+    }
+
+    [Fact]
+    public async Task InsertBatchAsync_Empty_ShouldReturnEmptyList()
+    {
+        var ids = await _coll.InsertBatchAsync(Array.Empty<VectorRecord>());
+        ids.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task UpsertAsync_NewRecord_ShouldInsert()
+    {
+        var record = new VectorRecord
+        {
+            Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0),
+            Metadata = new() { ["key"] = "unique_value" }
+        };
+
+        var id = await _coll.UpsertAsync(record, "key");
+        _coll.Count.Should().Be(1);
+
+        var fetched = await _coll.GetAsync(id);
+        fetched!.Metadata!["key"].Should().Be("unique_value");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_AfterMultipleInserts_ShouldOnlyRemoveTarget()
+    {
+        var id1 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) });
+        var id2 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(0, 1, 0, 0, 0, 0, 0, 0) });
+        var id3 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(0, 0, 1, 0, 0, 0, 0, 0) });
+
+        await _coll.DeleteAsync(id2);
+
+        _coll.Count.Should().Be(2);
+        (await _coll.GetAsync(id1)).Should().NotBeNull();
+        (await _coll.GetAsync(id2)).Should().BeNull();
+        (await _coll.GetAsync(id3)).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Query_WithEfSearch_ShouldApply()
+    {
+        for (int i = 0; i < 20; i++)
+        {
+            await _coll.InsertAsync(new VectorRecord
+            {
+                Vector = Vec(i, i * 0.5f, 0, 0, 0, 0, 0, 0)
+            });
+        }
+
+        var results = await _coll.Query(Vec(1, 0, 0, 0, 0, 0, 0, 0))
+            .TopK(5)
+            .WithEfSearch(100) // 自定义 efSearch
+            .ToListAsync();
+
+        results.Should().HaveCount(5);
+    }
+
+    [Fact]
+    public async Task InsertAsync_NullMetadata_ShouldWork()
+    {
+        var id = await _coll.InsertAsync(new VectorRecord
+        {
+            Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0),
+            Metadata = null,
+            Text = "no_meta"
+        });
+
+        var fetched = await _coll.GetAsync(id);
+        fetched.Should().NotBeNull();
+        fetched!.Text.Should().Be("no_meta");
+    }
+
+    [Fact]
+    public async Task InsertAsync_NullText_ShouldWork()
+    {
+        var id = await _coll.InsertAsync(new VectorRecord
+        {
+            Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0),
+            Metadata = new() { ["k"] = "v" },
+            Text = null
+        });
+
+        var fetched = await _coll.GetAsync(id);
+        fetched.Should().NotBeNull();
+        fetched!.Text.Should().BeNull();
+        fetched.Metadata!["k"].Should().Be("v");
+    }
+
+    [Fact]
+    public async Task Query_AfterDeleteAll_ShouldReturnEmpty()
+    {
+        var id1 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) });
+        var id2 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(0, 1, 0, 0, 0, 0, 0, 0) });
+        await _coll.DeleteAsync(id1);
+        await _coll.DeleteAsync(id2);
+
+        var results = await _coll.Query(Vec(1, 0, 0, 0, 0, 0, 0, 0)).TopK(10).ToListAsync();
+        results.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Count_ShouldReflectInsertsAndDeletes()
+    {
+        _coll.Count.Should().Be(0);
+
+        var id1 = await _coll.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) });
+        _coll.Count.Should().Be(1);
+
+        await _coll.InsertAsync(new VectorRecord { Vector = Vec(0, 1, 0, 0, 0, 0, 0, 0) });
+        _coll.Count.Should().Be(2);
+
+        await _coll.DeleteAsync(id1);
+        _coll.Count.Should().Be(1);
+    }
+
     public void Dispose()
     {
         _db?.Dispose();

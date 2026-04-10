@@ -343,9 +343,12 @@ internal sealed class PageManager : IDisposable
     /// <summary>初始化空闲链表：将 [startPage, endPage) 范围内的页串联成链表</summary>
     private void InitializeFreeList(ulong startPage, ulong endPage)
     {
+        if (startPage >= endPage) return;
+
         // 从后向前串联，使分配时按从小到大的顺序分配
-        for (var i = endPage - 1; i >= startPage; i--)
+        for (var i = endPage; i > startPage;)
         {
+            i--;
             var freeHeader = new PageHeader
             {
                 PageId = i,
@@ -356,8 +359,6 @@ internal sealed class PageManager : IDisposable
             };
             WritePageHeader(i, freeHeader);
             _header.FreePageListHead = i;
-
-            if (i == 0) break; // 防止 ulong 下溢
         }
     }
 

@@ -70,6 +70,9 @@ internal static class CollectionCatalog
         for (var i = 0u; i < count; i++)
         {
             var nameLen = br.ReadUInt32();
+            if (nameLen > 1024)
+                throw new CorruptedFileException($"集合名称长度异常: {nameLen} 字节（上限 1024）");
+
             var nameBytes = br.ReadBytes((int)nameLen);
             var name = Encoding.UTF8.GetString(nameBytes);
 

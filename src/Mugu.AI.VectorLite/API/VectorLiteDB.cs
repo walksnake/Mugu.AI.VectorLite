@@ -16,6 +16,7 @@ public sealed class VectorLiteDB : IDisposable
     private readonly Dictionary<string, Collection> _collections = new();
     private readonly ReaderWriterLockSlim _rwLock = new();
     private readonly Timer? _checkpointTimer;
+    private int _checkpointRunning;
     private bool _disposed;
 
     /// <summary>数据库文件路径</summary>
@@ -178,8 +179,17 @@ public sealed class VectorLiteDB : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _checkpointTimer?.Dispose();
+        // 等待所有定时器回调完成后释放
+        if (_checkpointTimer != null)
+        {
+            var timerStopped = new ManualResetEvent(false);
+            _checkpointTimer.Dispose(timerStopped);
+            timerStopped.WaitOne();
+            timerStopped.Dispose();
+        }
 
+        // 在写锁保护下执行最终检查点
+        _rwLock.EnterWriteLock();
         try
         {
             FlushAndCheckpoint();
@@ -187,6 +197,10 @@ public sealed class VectorLiteDB : IDisposable
         catch (Exception ex)
         {
             _logger?.LogError(ex, "关闭时检查点失败，数据可能需要通过 WAL 恢复");
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
         }
 
         _storage.Dispose();
@@ -342,14 +356,25 @@ public sealed class VectorLiteDB : IDisposable
 
     private void TryCheckpoint()
     {
+        if (Interlocked.CompareExchange(ref _checkpointRunning, 1, 0) != 0)
+            return;
+
         try
         {
-            if (!_disposed)
-                Checkpoint();
+            if (_disposed) return;
+            Checkpoint();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 数据库正在关闭，忽略
         }
         catch (Exception ex)
         {
             _logger?.LogError(ex, "自动检查点失败");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _checkpointRunning, 0);
         }
     }
 

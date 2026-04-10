@@ -222,10 +222,14 @@ async Task RunQuickStartAsync(string path)
     Console.WriteLine($"  category=\"宠物\" 的记录ID: [{string.Join(", ", petIds)}]");
 
     // 5c. 删除记录
-    PrintSeparator("5c. 删除记录");
+    PrintSeparator("5c. 删除记录（单条 + 批量）");
 
     var deleted = await collection.DeleteAsync(singleId);
-    Console.WriteLine($"  删除 id={singleId}: {(deleted ? "成功" : "失败")}");
+    Console.WriteLine($"  单条删除 id={singleId}: {(deleted ? "成功" : "失败")}");
+
+    // 批量删除
+    var batchDeleted = await collection.DeleteBatchAsync(batchIds.Take(2));
+    Console.WriteLine($"  批量删除 {batchDeleted} 条记录");
     Console.WriteLine($"  集合剩余记录数: {collection.Count}");
 
     // 再次尝试获取已删除记录
@@ -383,7 +387,7 @@ async Task RunQuickStartAsync(string path)
     Console.WriteLine("  ✓ 混合查询（精确匹配 / 范围过滤 / 组合 AND）");
     Console.WriteLine("  ✓ 最低分数阈值 / 自定义 efSearch");
     Console.WriteLine("  ✓ 按 ID 查询 / 按元数据查找");
-    Console.WriteLine("  ✓ 记录删除与 Upsert");
+    Console.WriteLine("  ✓ 记录删除（单条 / 批量）与 Upsert");
     Console.WriteLine("  ✓ 多集合管理");
     Console.WriteLine("  ✓ 手动检查点");
     Console.WriteLine("  ✓ 持久化与崩溃恢复（关闭→重开→数据完整）");

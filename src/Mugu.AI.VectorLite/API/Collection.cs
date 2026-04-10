@@ -318,17 +318,21 @@ internal sealed class Collection : ICollection
         if (record.Metadata == null || !record.Metadata.TryGetValue(keyField, out var keyValue))
             throw new ArgumentException($"记录的 Metadata 中不包含键 '{keyField}'", nameof(keyField));
 
-        // 整个 Upsert 在写锁下原子执行
+        // 整个 Upsert 在写锁下原子执行：先插入新记录，成功后删除旧记录
         _rwLock.EnterWriteLock();
         try
         {
             var filter = new EqualFilter(keyField, keyValue);
             var existingIds = _scalarIndex.Filter(filter).ToList();
 
+            // 先插入新记录（WAL 先记录 Insert）
+            var newId = InsertCore(record);
+
+            // 再删除旧记录（WAL 再记录 Delete），即使此处失败新记录已持久化
             foreach (var existingId in existingIds)
                 DeleteCore(existingId);
 
-            return Task.FromResult(InsertCore(record));
+            return Task.FromResult(newId);
         }
         finally
         {
@@ -458,31 +462,45 @@ internal sealed class Collection : ICollection
             if (!IsDirty && HnswRootPage != 0)
                 return;
 
-            storage.WriteTransaction(ctx =>
+            // 保存旧根页引用，异常时恢复
+            var oldHnswRoot = HnswRootPage;
+            var oldScalarRoot = ScalarIndexRootPage;
+            var oldTextRoot = TextStoreRootPage;
+
+            try
             {
-                // 释放旧页链
-                if (HnswRootPage != 0)
-                    PageChainIO.FreeChain(ctx, storage, HnswRootPage);
-                if (ScalarIndexRootPage != 0)
-                    PageChainIO.FreeChain(ctx, storage, ScalarIndexRootPage);
-                if (TextStoreRootPage != 0)
-                    PageChainIO.FreeChain(ctx, storage, TextStoreRootPage);
-
-                // 序列化 HNSW 索引
+                // 先序列化所有数据（在释放旧页链之前，TextStore 可能需要从旧页链读取）
                 var hnswData = _hnswIndex.Serialize();
-                HnswRootPage = PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData);
-
-                // 序列化标量索引
                 var scalarData = ScalarIndexSerializer.Serialize(_scalarIndex);
-                ScalarIndexRootPage = PageChainIO.WriteChain(ctx, storage, PageType.ScalarIndex, scalarData);
-
-                // 序列化文本存储
                 var activeIds = _hnswIndex.GetActiveNodeIds();
                 var textData = _textStore.Serialize(activeIds);
-                TextStoreRootPage = PageChainIO.WriteChain(ctx, storage, PageType.TextData, textData);
-            });
 
-            // 检查点成功后重置文本存储状态（事务已提交，安全清除缓冲）
+                storage.WriteTransaction(ctx =>
+                {
+                    // 释放旧页链
+                    if (HnswRootPage != 0)
+                        PageChainIO.FreeChain(ctx, storage, HnswRootPage);
+                    if (ScalarIndexRootPage != 0)
+                        PageChainIO.FreeChain(ctx, storage, ScalarIndexRootPage);
+                    if (TextStoreRootPage != 0)
+                        PageChainIO.FreeChain(ctx, storage, TextStoreRootPage);
+
+                    // 写入新页链
+                    HnswRootPage = PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData);
+                    ScalarIndexRootPage = PageChainIO.WriteChain(ctx, storage, PageType.ScalarIndex, scalarData);
+                    TextStoreRootPage = PageChainIO.WriteChain(ctx, storage, PageType.TextData, textData);
+                });
+            }
+            catch
+            {
+                // 事务失败（已回滚），恢复旧根页引用
+                HnswRootPage = oldHnswRoot;
+                ScalarIndexRootPage = oldScalarRoot;
+                TextStoreRootPage = oldTextRoot;
+                throw;
+            }
+
+            // 检查点成功后重置文本存储状态
             _textStore.ClearPending();
             _textStore.ResetChainState(storage, TextStoreRootPage);
             IsDirty = false;

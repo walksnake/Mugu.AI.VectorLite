@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Hashing;
 using Microsoft.Extensions.Logging;
@@ -21,7 +22,7 @@ internal sealed class Wal : IDisposable
     // [最后4字节] Checksum (CRC32)
     private const int MinRecordSize = 37; // 无数据时的最小记录大小
 
-    private readonly FileStream _walStream;
+    private FileStream _walStream;
     private readonly ILogger? _logger;
     private readonly object _lock = new();
     private ulong _nextSequenceNumber;
@@ -108,7 +109,7 @@ internal sealed class Wal : IDisposable
     }
 
     /// <summary>
-    /// 检查点操作：将WAL中已提交事务的页写入刷入主文件，截断WAL。
+    /// 检查点操作：将WAL中已提交事务的页写入刷入主文件，原子替换WAL。
     /// </summary>
     internal void Checkpoint(PageManager pageManager)
     {
@@ -116,20 +117,15 @@ internal sealed class Wal : IDisposable
         {
             _logger?.LogInformation("开始检查点...");
 
-            // 第一遍扫描：收集已提交事务
             var records = ReadAllRecords();
             var committedTxIds = new HashSet<ulong>();
-            var rolledBackTxIds = new HashSet<ulong>();
 
             foreach (var record in records)
             {
                 if (record.OperationType == WalOperationType.TxCommit)
                     committedTxIds.Add(record.TransactionId);
-                else if (record.OperationType == WalOperationType.TxRollback)
-                    rolledBackTxIds.Add(record.TransactionId);
             }
 
-            // 第二遍：将已提交事务的 PageWrite 刷入主文件
             var pageWrites = 0;
             foreach (var record in records)
             {
@@ -142,27 +138,35 @@ internal sealed class Wal : IDisposable
             }
 
             pageManager.Flush();
-
-            // 更新文件头检查点时间
             pageManager.Header.LastCheckpoint =
                 (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             pageManager.FlushHeader();
 
-            // 截断 WAL
-            _walStream.SetLength(0);
-            _walStream.Flush(true);
+            // 原子重写 WAL：先写临时文件再替换，防止截断期间崩溃丢失数据
+            var tempPath = FilePath + ".tmp";
+            ulong tempSeq = 0;
+            using (var tempStream = new FileStream(tempPath, FileMode.Create,
+                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                WriteRecordToStream(tempStream, ref tempSeq, 0,
+                    WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
+                tempStream.Flush(true);
+            }
 
-            // 写入检查点标记
-            WriteRecord(0, WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
+            _walStream.Close();
+            File.Move(tempPath, FilePath, overwrite: true);
+            _walStream = new FileStream(FilePath, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.WriteThrough);
+            _nextSequenceNumber = tempSeq;
+            _nextTransactionId = 0;
 
             _logger?.LogInformation("检查点完成: 刷入 {Count} 个页写入", pageWrites);
         }
     }
 
     /// <summary>
-    /// 崩溃恢复：读取WAL，重放所有已提交但未检查点的物理事务。
-    /// 逻辑记录（RecordInsert/RecordDelete）被保留在 WAL 中，
-    /// 供后续 ReadLogicalRecords() 进行逻辑恢复。
+    /// 崩溃恢复：读取WAL，重放已提交的物理事务，
+    /// 逻辑记录通过原子重写保留在新 WAL 中供后续恢复。
     /// </summary>
     internal void Replay(PageManager pageManager)
     {
@@ -177,7 +181,6 @@ internal sealed class Wal : IDisposable
             if (records.Count == 0)
                 return;
 
-            // 收集已提交事务
             var committedTxIds = new HashSet<ulong>();
             foreach (var record in records)
             {
@@ -185,7 +188,6 @@ internal sealed class Wal : IDisposable
                     committedTxIds.Add(record.TransactionId);
             }
 
-            // 重放已提交事务的物理页写入
             var replayed = 0;
             foreach (var record in records)
             {
@@ -203,7 +205,7 @@ internal sealed class Wal : IDisposable
                 pageManager.FlushHeader();
             }
 
-            // 收集已提交的逻辑记录，截断 WAL 后重新写入
+            // 收集已提交的逻辑记录
             var logicalRecords = new List<(WalOperationType OpType, byte[] Data)>();
             foreach (var record in records)
             {
@@ -214,25 +216,36 @@ internal sealed class Wal : IDisposable
                 }
             }
 
-            // 截断 WAL
-            _walStream.SetLength(0);
-            _walStream.Flush(true);
-            _nextSequenceNumber = 0;
-            _nextTransactionId = 0;
-
-            // 写入检查点标记
-            WriteRecord(0, WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
-
-            // 重新写入已提交的逻辑记录（以微事务形式）
-            foreach (var (opType, data) in logicalRecords)
+            // 原子重写 WAL：先写临时文件再替换，确保逻辑记录不丢失
+            var tempPath = FilePath + ".tmp";
+            ulong tempSeq = 0;
+            ulong tempTxId = 0;
+            using (var tempStream = new FileStream(tempPath, FileMode.Create,
+                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             {
-                var txId = ++_nextTransactionId;
-                WriteRecord(txId, WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
-                WriteRecord(txId, opType, 0, data);
-                WriteRecord(txId, WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
+                WriteRecordToStream(tempStream, ref tempSeq, 0,
+                    WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
+
+                foreach (var (opType, data) in logicalRecords)
+                {
+                    var txId = ++tempTxId;
+                    WriteRecordToStream(tempStream, ref tempSeq, txId,
+                        WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
+                    WriteRecordToStream(tempStream, ref tempSeq, txId,
+                        opType, 0, data);
+                    WriteRecordToStream(tempStream, ref tempSeq, txId,
+                        WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
+                }
+
+                tempStream.Flush(true);
             }
 
-            _walStream.Flush(true);
+            _walStream.Close();
+            File.Move(tempPath, FilePath, overwrite: true);
+            _walStream = new FileStream(FilePath, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.WriteThrough);
+            _nextSequenceNumber = tempSeq;
+            _nextTransactionId = tempTxId;
 
             _logger?.LogInformation(
                 "WAL 恢复完成: 重放 {PhysCount} 个页写入, 保留 {LogCount} 条逻辑记录",
@@ -316,31 +329,45 @@ internal sealed class Wal : IDisposable
         _walStream.Dispose();
     }
 
-    /// <summary>写入一条 WAL 记录</summary>
+    /// <summary>写入一条 WAL 记录到当前 WAL 流</summary>
     private void WriteRecord(ulong txId, WalOperationType opType, ulong pageId, ReadOnlySpan<byte> data)
+    {
+        _walStream.Seek(0, SeekOrigin.End);
+        WriteRecordToStream(_walStream, ref _nextSequenceNumber, txId, opType, pageId, data);
+    }
+
+    /// <summary>写入一条 WAL 记录到指定流（支持原子重写场景）</summary>
+    private static void WriteRecordToStream(
+        Stream stream, ref ulong nextSeqNo,
+        ulong txId, WalOperationType opType, ulong pageId, ReadOnlySpan<byte> data)
     {
         if (data.Length > 256 * 1024 * 1024 - MinRecordSize)
             throw new StorageException($"WAL 数据载荷过大: {data.Length} 字节");
+
         var recordLength = (uint)(MinRecordSize + data.Length);
-        var seqNo = ++_nextSequenceNumber;
+        var seqNo = ++nextSeqNo;
 
-        // 构造记录（不含 CRC）
-        var buffer = new byte[recordLength];
-        var span = buffer.AsSpan();
-        BinaryPrimitives.WriteUInt32LittleEndian(span[0..4], recordLength);
-        BinaryPrimitives.WriteUInt64LittleEndian(span[4..12], txId);
-        BinaryPrimitives.WriteUInt64LittleEndian(span[12..20], seqNo);
-        span[20] = (byte)opType;
-        BinaryPrimitives.WriteUInt64LittleEndian(span[21..29], pageId);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[29..33], (uint)data.Length);
-        data.CopyTo(span[33..]);
+        var buffer = ArrayPool<byte>.Shared.Rent((int)recordLength);
+        try
+        {
+            var span = buffer.AsSpan(0, (int)recordLength);
+            BinaryPrimitives.WriteUInt32LittleEndian(span[0..4], recordLength);
+            BinaryPrimitives.WriteUInt64LittleEndian(span[4..12], txId);
+            BinaryPrimitives.WriteUInt64LittleEndian(span[12..20], seqNo);
+            span[20] = (byte)opType;
+            BinaryPrimitives.WriteUInt64LittleEndian(span[21..29], pageId);
+            BinaryPrimitives.WriteUInt32LittleEndian(span[29..33], (uint)data.Length);
+            data.CopyTo(span[33..]);
 
-        // CRC32 覆盖除最后4字节外的全部内容
-        var crc = Crc32.HashToUInt32(span[..^4]);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[^4..], crc);
+            var crc = Crc32.HashToUInt32(span[..^4]);
+            BinaryPrimitives.WriteUInt32LittleEndian(span[^4..], crc);
 
-        _walStream.Seek(0, SeekOrigin.End);
-        _walStream.Write(buffer);
+            stream.Write(span);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     /// <summary>读取所有 WAL 记录</summary>

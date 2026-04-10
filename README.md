@@ -244,7 +244,7 @@ Mugu.AI.VectorLite/
 
 ## 📄 许可证
 
-[MIT License](LICENSE)
+[MIT License](LICENSE.txt)
 
 ---
 

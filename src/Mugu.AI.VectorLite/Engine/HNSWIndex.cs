@@ -185,7 +185,9 @@ internal sealed class HNSWIndex
     /// <summary>序列化到字节数组</summary>
     internal byte[] Serialize()
     {
-        using var ms = new MemoryStream();
+        // 预估大小减少 MemoryStream 扩容次数
+        var estimatedSize = 17 + _graph.Nodes.Count * 128;
+        using var ms = new MemoryStream(Math.Max(estimatedSize, 1024));
         using var bw = new BinaryWriter(ms);
 
         // 版本号（用于未来格式升级）
@@ -482,7 +484,9 @@ internal sealed class HNSWIndex
     /// <summary>生成随机层级</summary>
     private int RandomLevel()
     {
-        return (int)Math.Floor(-Math.Log(Random.Shared.NextDouble()) * _mL);
+        // 夹紧下界避免 Log(0) = -Infinity 导致极端值
+        var r = Math.Max(Random.Shared.NextDouble(), double.Epsilon);
+        return (int)Math.Floor(-Math.Log(r) * _mL);
     }
 
     /// <summary>检查节点是否存在（含已删除的）</summary>

@@ -25,6 +25,11 @@ public sealed class SearchResult
     /// <summary>与查询向量的距离（越小越相似）</summary>
     public float Distance { get; init; }
 
-    /// <summary>相似度得分（1 - Distance，仅余弦距离有意义）</summary>
+    /// <summary>
+    /// 相似度得分。
+    /// 对于余弦距离：Score = 1 - Distance，范围 [0, 2]，越高越相似。
+    /// 对于其他度量（欧几里得、点积），Score = 1 - Distance 可能为负值，
+    /// 建议直接使用 Distance 字段进行比较。
+    /// </summary>
     public float Score => 1f - Distance;
 }

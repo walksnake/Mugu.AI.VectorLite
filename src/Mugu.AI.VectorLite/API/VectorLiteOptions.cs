@@ -41,13 +41,13 @@ public sealed class VectorLiteOptions
     {
         if (PageSize < 4096 || PageSize % 4096 != 0)
             throw new ArgumentException($"PageSize 必须为 4096 的整数倍，当前值: {PageSize}");
-        if (MaxDimensions == 0)
-            throw new ArgumentException("MaxDimensions 不能为 0");
-        if (HnswM < 2)
-            throw new ArgumentException($"HnswM 必须 >= 2，当前值: {HnswM}");
-        if (HnswEfConstruction < 1)
-            throw new ArgumentException($"HnswEfConstruction 必须 >= 1，当前值: {HnswEfConstruction}");
-        if (HnswEfSearch < 1)
-            throw new ArgumentException($"HnswEfSearch 必须 >= 1，当前值: {HnswEfSearch}");
+        if (MaxDimensions == 0 || MaxDimensions > 100_000)
+            throw new ArgumentException($"MaxDimensions 必须在 1..100000 之间，当前值: {MaxDimensions}");
+        if (HnswM < 2 || HnswM > 128)
+            throw new ArgumentException($"HnswM 必须在 2..128 之间，当前值: {HnswM}");
+        if (HnswEfConstruction < 1 || HnswEfConstruction > 2000)
+            throw new ArgumentException($"HnswEfConstruction 必须在 1..2000 之间，当前值: {HnswEfConstruction}");
+        if (HnswEfSearch < 1 || HnswEfSearch > 2000)
+            throw new ArgumentException($"HnswEfSearch 必须在 1..2000 之间，当前值: {HnswEfSearch}");
     }
 }
