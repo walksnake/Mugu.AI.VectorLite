@@ -1,0 +1,161 @@
+namespace Mugu.AI.VectorLite.Storage;
+
+/// <summary>
+/// 页链读写工具：将任意长度字节数据写入/读出页面链。
+/// 页间通过 PageHeader.NextPageId 串联。
+/// </summary>
+internal static class PageChainIO
+{
+    /// <summary>
+    /// 将数据写入新分配的页链，返回首页 ID。
+    /// 所有页通过 ctx 在 WriteTransaction 内分配和写入。
+    /// </summary>
+    internal static ulong WriteChain(
+        FileStorage.WriteContext ctx,
+        FileStorage storage,
+        PageType pageType,
+        ReadOnlySpan<byte> data)
+    {
+        var usable = storage.UsablePageSize;
+        if (usable <= 0)
+            throw new StorageException("页可用空间不足");
+
+        // 计算需要的页数
+        var pageCount = data.Length == 0 ? 1 : (data.Length + usable - 1) / usable;
+
+        // 前向分配所有页
+        var pageIds = new ulong[pageCount];
+        for (var i = 0; i < pageCount; i++)
+        {
+            pageIds[i] = ctx.AllocatePage(pageType);
+        }
+
+        // 逐页写入，设置 NextPageId 串联
+        for (var i = 0; i < pageCount; i++)
+        {
+            var offset = i * usable;
+            var chunkLen = Math.Min(usable, data.Length - offset);
+            var chunk = chunkLen > 0 ? data.Slice(offset, chunkLen) : ReadOnlySpan<byte>.Empty;
+            var nextPageId = i < pageCount - 1 ? pageIds[i + 1] : 0UL;
+
+            // 构造完整页：PageHeader + 数据 + 零填充
+            var fullPage = new byte[storage.PageSize];
+            var header = new PageHeader
+            {
+                PageId = pageIds[i],
+                PageType = pageType,
+                UsedBytes = (uint)chunkLen,
+                NextPageId = nextPageId,
+                Checksum = 0
+            };
+            // 先写入页头（不含校验和）
+            header.AsReadOnlySpan().CopyTo(fullPage);
+            // 写入数据
+            if (chunkLen > 0)
+                chunk.CopyTo(fullPage.AsSpan(PageHeader.SizeInBytes));
+            // 计算并写入校验和
+            header.Checksum = PageHeader.CalculatePageChecksum(fullPage);
+            header.AsReadOnlySpan().CopyTo(fullPage);
+
+            ctx.WritePage(pageIds[i], fullPage);
+        }
+
+        return pageIds[0];
+    }
+
+    /// <summary>
+    /// 从页链读取全部数据到连续字节数组。
+    /// 用于 HNSW / ScalarIndex 的一次性加载。
+    /// </summary>
+    internal static byte[] ReadChain(FileStorage storage, ulong firstPageId)
+    {
+        if (firstPageId == 0)
+            return [];
+
+        using var ms = new MemoryStream();
+        var currentPageId = firstPageId;
+
+        while (currentPageId != 0)
+        {
+            var header = storage.ReadPageHeader(currentPageId);
+            if (header.UsedBytes > 0)
+            {
+                var buffer = new byte[header.UsedBytes];
+                storage.ReadPageData(currentPageId, buffer);
+                ms.Write(buffer, 0, (int)header.UsedBytes);
+            }
+            currentPageId = header.NextPageId;
+        }
+
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// 遍历页链，返回所有页ID的有序列表。
+    /// 用于 TextStore 建立随机访问映射。
+    /// </summary>
+    internal static List<ulong> WalkChain(FileStorage storage, ulong firstPageId)
+    {
+        var pageIds = new List<ulong>();
+        var currentPageId = firstPageId;
+
+        while (currentPageId != 0)
+        {
+            pageIds.Add(currentPageId);
+            var header = storage.ReadPageHeader(currentPageId);
+            currentPageId = header.NextPageId;
+        }
+
+        return pageIds;
+    }
+
+    /// <summary>
+    /// 从页链的指定字节偏移处读取指定长度的数据（随机访问）。
+    /// chainPageIds 为 WalkChain 返回的页ID序列。
+    /// </summary>
+    internal static int ReadAt(
+        FileStorage storage,
+        List<ulong> chainPageIds,
+        long byteOffset,
+        Span<byte> destination)
+    {
+        var usable = storage.UsablePageSize;
+        var pageIndex = (int)(byteOffset / usable);
+        var offsetInPage = (int)(byteOffset % usable);
+        var bytesRead = 0;
+
+        while (bytesRead < destination.Length && pageIndex < chainPageIds.Count)
+        {
+            var pageId = chainPageIds[pageIndex];
+            var availableInPage = usable - offsetInPage;
+            var toRead = Math.Min(destination.Length - bytesRead, availableInPage);
+
+            // 读取整页数据区域，取需要的切片
+            var pageData = new byte[usable];
+            storage.ReadPageData(pageId, pageData);
+            pageData.AsSpan(offsetInPage, toRead).CopyTo(destination.Slice(bytesRead, toRead));
+
+            bytesRead += toRead;
+            pageIndex++;
+            offsetInPage = 0; // 后续页从头开始
+        }
+
+        return bytesRead;
+    }
+
+    /// <summary>释放整个页链的所有页</summary>
+    internal static void FreeChain(
+        FileStorage.WriteContext ctx,
+        FileStorage storage,
+        ulong firstPageId)
+    {
+        var currentPageId = firstPageId;
+        while (currentPageId != 0)
+        {
+            var header = storage.ReadPageHeader(currentPageId);
+            var nextPageId = header.NextPageId;
+            ctx.FreePage(currentPageId);
+            currentPageId = nextPageId;
+        }
+    }
+}

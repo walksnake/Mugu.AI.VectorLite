@@ -15,7 +15,6 @@ internal sealed class HNSWIndex
     private readonly int _mmax0;
     private readonly int _efConstruction;
     private readonly double _mL;
-    private readonly Random _random;
     private readonly object _writeLock = new();
 
     internal int Count => _graph.ActiveCount;
@@ -28,7 +27,6 @@ internal sealed class HNSWIndex
         _mmax0 = 2 * m;
         _efConstruction = efConstruction;
         _mL = 1.0 / Math.Log(m);
-        _random = new Random();
     }
 
     /// <summary>插入一个向量节点到索引中</summary>
@@ -265,7 +263,11 @@ internal sealed class HNSWIndex
         return index;
     }
 
-    /// <summary>在指定层搜索</summary>
+    /// <summary>
+    /// 在指定层搜索。导航与过滤分离：邻居始终参与图遍历，
+    /// 仅在收集结果时应用过滤条件，保证图导航连通性。
+    /// 使用 SortedSet 维护搜索边界，O(log n) 的插入和删除。
+    /// </summary>
     private List<(ulong RecordId, float Distance)> SearchLayer(
         ReadOnlySpan<float> queryVector,
         ulong entryId,
@@ -279,28 +281,31 @@ internal sealed class HNSWIndex
         var visited = new HashSet<ulong> { entryId };
         var entryDist = _distFunc.Calculate(queryVector, entryNode.Vector.Span);
 
-        // 最小堆（候选集）— 入口节点始终加入候选集用于导航
+        // 候选最小堆
         var candidates = new PriorityQueue<ulong, float>();
         candidates.Enqueue(entryId, entryDist);
 
-        // 结果集 — 入口节点仅在通过过滤时才加入
-        var results = new List<(ulong RecordId, float Distance)>();
-        if (candidateIds == null || candidateIds.Contains(entryId))
+        // 动态列表 W：有序集合，用于维护搜索边界（包含所有已探索节点）
+        var w = new SortedSet<(float Distance, ulong RecordId)> { (entryDist, entryId) };
+
+        // 过滤结果集（仅在有过滤条件时独立收集）
+        List<(ulong RecordId, float Distance)>? filteredResults = null;
+        if (candidateIds != null)
         {
-            results.Add((entryId, entryDist));
+            filteredResults = new List<(ulong RecordId, float Distance)>();
+            if (candidateIds.Contains(entryId))
+                filteredResults.Add((entryId, entryDist));
         }
-        var farthestDist = entryDist;
 
         while (candidates.Count > 0)
         {
             candidates.TryDequeue(out var cId, out var cDist);
 
-            if (cDist > farthestDist && results.Count >= ef)
+            if (w.Count >= ef && cDist > w.Max.Distance)
                 break;
 
             if (!_graph.Nodes.TryGetValue(cId, out var cNode))
                 continue;
-
             if (layer > cNode.MaxLayer)
                 continue;
 
@@ -316,31 +321,31 @@ internal sealed class HNSWIndex
                 if (!visited.Add(neighborId)) continue;
                 if (!_graph.Nodes.TryGetValue(neighborId, out var nNode)) continue;
 
-                // 前置过滤
-                if (candidateIds != null && !candidateIds.Contains(neighborId))
-                    continue;
-
                 var nDist = _distFunc.Calculate(queryVector, nNode.Vector.Span);
 
-                if (results.Count < ef || nDist < farthestDist)
+                if (w.Count < ef || nDist < w.Max.Distance)
                 {
+                    // 始终加入候选集和动态列表以维持图导航连通性
                     candidates.Enqueue(neighborId, nDist);
-                    results.Add((neighborId, nDist));
+                    w.Add((nDist, neighborId));
+                    if (w.Count > ef)
+                        w.Remove(w.Max);
 
-                    // 保持结果集大小不超过 ef
-                    if (results.Count > ef)
-                    {
-                        results.Sort((x, y) => x.Distance.CompareTo(y.Distance));
-                        results.RemoveAt(results.Count - 1);
-                    }
-
-                    farthestDist = results.Max(r => r.Distance);
+                    // 仅将通过过滤的节点加入过滤结果集
+                    if (filteredResults != null && candidateIds!.Contains(neighborId))
+                        filteredResults.Add((neighborId, nDist));
                 }
             }
         }
 
-        results.Sort((x, y) => x.Distance.CompareTo(y.Distance));
-        return results;
+        // 无过滤时直接返回 W 内容；有过滤时返回过滤结果
+        if (filteredResults != null)
+        {
+            filteredResults.Sort((x, y) => x.Distance.CompareTo(y.Distance));
+            return filteredResults;
+        }
+
+        return w.Select(item => (item.RecordId, item.Distance)).ToList();
     }
 
     /// <summary>启发式邻居选择</summary>
@@ -383,10 +388,11 @@ internal sealed class HNSWIndex
         // 如果启发式选择不够，补充最近的
         if (selected.Count < maxConnections)
         {
+            var selectedIds = new HashSet<ulong>(selected.Select(s => s.RecordId));
             foreach (var candidate in sorted)
             {
                 if (selected.Count >= maxConnections) break;
-                if (!selected.Any(s => s.RecordId == candidate.RecordId))
+                if (selectedIds.Add(candidate.RecordId))
                     selected.Add(candidate);
             }
         }
@@ -417,6 +423,21 @@ internal sealed class HNSWIndex
     /// <summary>生成随机层级</summary>
     private int RandomLevel()
     {
-        return (int)Math.Floor(-Math.Log(_random.NextDouble()) * _mL);
+        return (int)Math.Floor(-Math.Log(Random.Shared.NextDouble()) * _mL);
     }
+
+    /// <summary>检查节点是否存在（含已删除的）</summary>
+    internal bool ContainsNode(ulong id) => _graph.Nodes.ContainsKey(id);
+
+    /// <summary>检查节点是否存在且活跃（未被删除）</summary>
+    internal bool ContainsActiveNode(ulong id)
+        => _graph.Nodes.TryGetValue(id, out var node) && !node.IsDeleted;
+
+    /// <summary>获取节点（不存在返回 null）</summary>
+    internal HNSWNode? GetNode(ulong id)
+        => _graph.Nodes.TryGetValue(id, out var node) ? node : null;
+
+    /// <summary>获取所有活跃节点 ID</summary>
+    internal IEnumerable<ulong> GetActiveNodeIds()
+        => _graph.Nodes.Where(kv => !kv.Value.IsDeleted).Select(kv => kv.Key);
 }

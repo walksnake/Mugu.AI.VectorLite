@@ -22,5 +22,11 @@ internal enum WalOperationType : byte
     TxRollback = 0x12,
 
     /// <summary>检查点标记</summary>
-    Checkpoint = 0x20
+    Checkpoint = 0x20,
+
+    /// <summary>逻辑操作：插入记录</summary>
+    RecordInsert = 0x30,
+
+    /// <summary>逻辑操作：删除记录</summary>
+    RecordDelete = 0x31
 }

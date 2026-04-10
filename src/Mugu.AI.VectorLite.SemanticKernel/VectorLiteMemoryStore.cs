@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using Microsoft.SemanticKernel.Memory;
-using Mugu.AI.VectorLite.Engine;
 
 namespace Mugu.AI.VectorLite.SemanticKernel;
 
@@ -184,20 +183,11 @@ public sealed class VectorLiteMemoryStore : IMemoryStore, IDisposable
         return _db.GetOrCreateCollection(collectionName, dimensions);
     }
 
-    /// <summary>通过 SK key 查找记录ID</summary>
+    /// <summary>通过 SK key 查找记录ID（直接使用元数据索引，避免零向量查询）</summary>
     private static async Task<ulong?> FindBySkKeyAsync(ICollection collection, string skKey,
         CancellationToken ct)
     {
-        // 通过标量索引查找
-        var filter = new EqualFilter(MemoryRecordMapper.SkKeyField, skKey);
-
-        // 用零向量做查询（只关心过滤结果），取 TopK=1
-        var zeroVector = new float[collection.Dimensions];
-        var results = await collection.Query(zeroVector)
-            .Where(filter)
-            .TopK(1)
-            .ToListAsync(ct);
-
-        return results.Count > 0 ? results[0].Record.Id : null;
+        var ids = await collection.FindIdsByMetadataAsync(MemoryRecordMapper.SkKeyField, skKey, ct);
+        return ids.Count > 0 ? ids[0] : null;
     }
 }

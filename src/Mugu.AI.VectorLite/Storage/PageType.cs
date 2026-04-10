@@ -19,5 +19,8 @@ internal enum PageType : byte
     ScalarIndex = 0x04,
 
     /// <summary>溢出页（大记录续页）</summary>
-    Overflow = 0x06
+    Overflow = 0x06,
+
+    /// <summary>文本存储页链</summary>
+    TextData = 0x07
 }

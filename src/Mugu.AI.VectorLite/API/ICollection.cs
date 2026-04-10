@@ -26,6 +26,15 @@ public interface ICollection
     /// <summary>根据ID删除记录</summary>
     Task<bool> DeleteAsync(ulong id, CancellationToken ct = default);
 
+    /// <summary>根据元数据字段查找记录ID</summary>
+    Task<IReadOnlyList<ulong>> FindIdsByMetadataAsync(string field, object value, CancellationToken ct = default);
+
+    /// <summary>
+    /// 插入或更新记录：根据指定元数据字段查找已有记录，若存在则替换，否则插入。
+    /// keyField 对应 record.Metadata 中的一个键。
+    /// </summary>
+    Task<ulong> UpsertAsync(VectorRecord record, string keyField, CancellationToken ct = default);
+
     /// <summary>创建查询构建器</summary>
     IQueryBuilder Query(float[] queryVector);
 }

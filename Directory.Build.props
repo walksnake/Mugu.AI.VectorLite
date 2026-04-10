@@ -5,5 +5,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- NuGet 包元数据 -->
+    <Version>0.0.2</Version>
+    <Authors>Mugu.AI</Authors>
+    <Company>Mugu.AI</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/MuguAI/Mugu.AI.VectorLite</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MuguAI/Mugu.AI.VectorLite</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>vector-database;embedding;hnsw;semantic-search;rag;dotnet;ai</PackageTags>
   </PropertyGroup>
 </Project>

@@ -122,6 +122,23 @@ internal sealed class FileStorage : IDisposable
         _wal.Checkpoint(_pageManager);
     }
 
+    /// <summary>
+    /// 追加逻辑 WAL 记录（RecordInsert / RecordDelete）。
+    /// 在内存更新之前调用，确保零数据丢失。
+    /// </summary>
+    internal void LogLogicalOperation(WalOperationType opType, ReadOnlySpan<byte> data)
+    {
+        EnsureNotDisposed();
+        _wal.AppendLogical(opType, data);
+    }
+
+    /// <summary>读取自上次检查点以来的逻辑 WAL 记录（恢复用）</summary>
+    internal List<Wal.LogicalWalRecord> ReadLogicalRecords()
+    {
+        EnsureNotDisposed();
+        return _wal.ReadLogicalRecords();
+    }
+
     public void Dispose()
     {
         if (_disposed) return;

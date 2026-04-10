@@ -160,8 +160,9 @@ internal sealed class Wal : IDisposable
     }
 
     /// <summary>
-    /// 崩溃恢复：读取WAL，重放所有已提交但未检查点的事务。
-    /// 在数据库打开时调用。
+    /// 崩溃恢复：读取WAL，重放所有已提交但未检查点的物理事务。
+    /// 逻辑记录（RecordInsert/RecordDelete）被保留在 WAL 中，
+    /// 供后续 ReadLogicalRecords() 进行逻辑恢复。
     /// </summary>
     internal void Replay(PageManager pageManager)
     {
@@ -176,16 +177,15 @@ internal sealed class Wal : IDisposable
             if (records.Count == 0)
                 return;
 
-            // 收集已提交和已回滚的事务
+            // 收集已提交事务
             var committedTxIds = new HashSet<ulong>();
-
             foreach (var record in records)
             {
                 if (record.OperationType == WalOperationType.TxCommit)
                     committedTxIds.Add(record.TransactionId);
             }
 
-            // 重放已提交事务的页写入
+            // 重放已提交事务的物理页写入
             var replayed = 0;
             foreach (var record in records)
             {
@@ -203,11 +203,109 @@ internal sealed class Wal : IDisposable
                 pageManager.FlushHeader();
             }
 
+            // 收集已提交的逻辑记录，截断 WAL 后重新写入
+            var logicalRecords = new List<(WalOperationType OpType, byte[] Data)>();
+            foreach (var record in records)
+            {
+                if (IsLogicalOperation(record.OperationType)
+                    && committedTxIds.Contains(record.TransactionId))
+                {
+                    logicalRecords.Add((record.OperationType, record.Data ?? []));
+                }
+            }
+
             // 截断 WAL
             _walStream.SetLength(0);
             _walStream.Flush(true);
+            _nextSequenceNumber = 0;
+            _nextTransactionId = 0;
 
-            _logger?.LogInformation("WAL 恢复完成: 重放 {Count} 个页写入", replayed);
+            // 写入检查点标记
+            WriteRecord(0, WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
+
+            // 重新写入已提交的逻辑记录（以微事务形式）
+            foreach (var (opType, data) in logicalRecords)
+            {
+                var txId = ++_nextTransactionId;
+                WriteRecord(txId, WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
+                WriteRecord(txId, opType, 0, data);
+                WriteRecord(txId, WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
+            }
+
+            _walStream.Flush(true);
+
+            _logger?.LogInformation(
+                "WAL 恢复完成: 重放 {PhysCount} 个页写入, 保留 {LogCount} 条逻辑记录",
+                replayed, logicalRecords.Count);
+        }
+    }
+
+    /// <summary>
+    /// 追加一条逻辑 WAL 记录（RecordInsert / RecordDelete）。
+    /// 自动包装为微事务（TxBegin → op → TxCommit）并 fsync。
+    /// </summary>
+    internal void AppendLogical(WalOperationType opType, ReadOnlySpan<byte> data)
+    {
+        if (!IsLogicalOperation(opType))
+            throw new ArgumentException($"非逻辑操作类型: {opType}", nameof(opType));
+
+        lock (_lock)
+        {
+            var txId = ++_nextTransactionId;
+            WriteRecord(txId, WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
+            WriteRecord(txId, opType, 0, data);
+            WriteRecord(txId, WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
+            _walStream.Flush(true);
+        }
+    }
+
+    /// <summary>
+    /// 读取 WAL 中自上次检查点以来所有已提交的逻辑记录。
+    /// 用于数据库启动时的逻辑恢复。
+    /// </summary>
+    internal List<LogicalWalRecord> ReadLogicalRecords()
+    {
+        lock (_lock)
+        {
+            var allRecords = ReadAllRecords();
+            var result = new List<LogicalWalRecord>();
+
+            // 找到最后一个 Checkpoint 标记的位置
+            var lastCheckpointIndex = -1;
+            for (var i = allRecords.Count - 1; i >= 0; i--)
+            {
+                if (allRecords[i].OperationType == WalOperationType.Checkpoint)
+                {
+                    lastCheckpointIndex = i;
+                    break;
+                }
+            }
+
+            // 收集已提交事务
+            var committedTxIds = new HashSet<ulong>();
+            var startIndex = lastCheckpointIndex + 1;
+            for (var i = startIndex; i < allRecords.Count; i++)
+            {
+                if (allRecords[i].OperationType == WalOperationType.TxCommit)
+                    committedTxIds.Add(allRecords[i].TransactionId);
+            }
+
+            // 收集已提交的逻辑记录
+            for (var i = startIndex; i < allRecords.Count; i++)
+            {
+                var record = allRecords[i];
+                if (IsLogicalOperation(record.OperationType)
+                    && committedTxIds.Contains(record.TransactionId))
+                {
+                    result.Add(new LogicalWalRecord
+                    {
+                        OperationType = record.OperationType,
+                        Data = record.Data ?? []
+                    });
+                }
+            }
+
+            return result;
         }
     }
 
@@ -320,13 +418,24 @@ internal sealed class Wal : IDisposable
         }
     }
 
-    /// <summary>WAL 记录的内存表示</summary>
+    /// <summary>WAL 记录的内存表示（内部）</summary>
     private struct WalRecord
     {
         public ulong TransactionId;
         public ulong SequenceNumber;
         public WalOperationType OperationType;
         public ulong TargetPageId;
+        public byte[] Data;
+    }
+
+    /// <summary>判断操作类型是否为逻辑操作</summary>
+    private static bool IsLogicalOperation(WalOperationType opType)
+        => opType == WalOperationType.RecordInsert || opType == WalOperationType.RecordDelete;
+
+    /// <summary>逻辑 WAL 记录（对外暴露，用于恢复）</summary>
+    internal struct LogicalWalRecord
+    {
+        public WalOperationType OperationType;
         public byte[] Data;
     }
 }

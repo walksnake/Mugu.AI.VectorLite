@@ -8,6 +8,7 @@
 | [核心引擎层详细设计](core-engine.md) | HNSW索引、标量索引、查询处理器、内存管理、SIMD距离计算 |
 | [API层详细设计](api-layer.md) | Fluent API、Semantic Kernel集成、异常体系、并发模型 |
 | [基准测试与质量门禁](quality-gate.md) | 功能基线、性能基准、阈值配置、CI集成 |
+| [数据持久化详细设计](persistence.md) | 检查点快照持久化、页链IO、序列化格式、加载/刷盘算法 |
 
 ## 整体架构纵览
 

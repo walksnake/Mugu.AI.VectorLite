@@ -107,12 +107,9 @@ internal sealed class PageManager : IDisposable
         EnsureNotDisposed();
         ValidatePageId(pageId);
 
-        Span<byte> buf = stackalloc byte[PageHeader.SizeInBytes];
         var offset = GetPageOffset(pageId);
-        _accessor!.ReadArray(offset, MemoryMarshal.Cast<byte, byte>(buf).ToArray(), 0, PageHeader.SizeInBytes);
-
         var headerBytes = new byte[PageHeader.SizeInBytes];
-        _accessor.ReadArray(offset, headerBytes, 0, PageHeader.SizeInBytes);
+        _accessor!.ReadArray(offset, headerBytes, 0, PageHeader.SizeInBytes);
         return MemoryMarshal.Read<PageHeader>(headerBytes);
     }
 

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace Mugu.AI.VectorLite.Engine;
 
 /// <summary>
@@ -11,8 +13,8 @@ internal sealed class HNSWGraph
     /// <summary>当前图的最大层级，-1 表示图为空</summary>
     internal int MaxLayer { get; set; } = -1;
 
-    /// <summary>所有节点的快速查找表</summary>
-    internal Dictionary<ulong, HNSWNode> Nodes { get; } = new();
+    /// <summary>所有节点的快速查找表（并发安全）</summary>
+    internal ConcurrentDictionary<ulong, HNSWNode> Nodes { get; } = new();
 
     /// <summary>节点总数（含已删除）</summary>
     internal int Count => Nodes.Count;
@@ -24,5 +26,5 @@ internal sealed class HNSWGraph
     internal int ActiveCount => Count - DeletedCount;
 
     /// <summary>图是否为空</summary>
-    internal bool IsEmpty => Nodes.Count == 0;
+    internal bool IsEmpty => Nodes.IsEmpty;
 }
