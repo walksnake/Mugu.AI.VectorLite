@@ -178,10 +178,13 @@ internal sealed class TextStore
         PageChainIO.ReadAt(storage, store._chainPageIds, 0, headerBuf);
 
         var entryCount = BitConverter.ToUInt64(headerBuf, 0);
+        const ulong MaxEntryCount = 100_000_000; // 1亿条上限
+        if (entryCount > MaxEntryCount)
+            throw new StorageException($"TextStore 索引条目数超出上限: {entryCount} > {MaxEntryCount}");
         store._dataSectionOffset = (long)BitConverter.ToUInt64(headerBuf, 8);
 
         // 读取索引区
-        store._textOffsets = new Dictionary<ulong, long>((int)entryCount);
+        store._textOffsets = new Dictionary<ulong, long>((int)Math.Min(entryCount, 1_000_000));
         var indexBuf = new byte[16]; // 每条索引 16 字节
         for (ulong i = 0; i < entryCount; i++)
         {
@@ -221,9 +224,12 @@ internal sealed class TextStore
         PageChainIO.ReadAt(storage, _chainPageIds, 0, headerBuf);
 
         var entryCount = BitConverter.ToUInt64(headerBuf, 0);
+        const ulong MaxEntryCountInReset = 100_000_000;
+        if (entryCount > MaxEntryCountInReset)
+            throw new StorageException($"TextStore 索引条目数超出上限: {entryCount}");
         _dataSectionOffset = (long)BitConverter.ToUInt64(headerBuf, 8);
 
-        _textOffsets = new Dictionary<ulong, long>((int)entryCount);
+        _textOffsets = new Dictionary<ulong, long>((int)Math.Min(entryCount, 1_000_000));
         var indexBuf = new byte[16];
         for (ulong i = 0; i < entryCount; i++)
         {
@@ -247,6 +253,10 @@ internal sealed class TextStore
 
         if (textLength == 0)
             return null;
+
+        const uint MaxTextLength = 100 * 1024 * 1024; // 100MB 上限
+        if (textLength > MaxTextLength)
+            throw new StorageException($"文本长度超出上限: {textLength} > {MaxTextLength}");
 
         // 读取文本内容
         var textBuf = new byte[textLength];

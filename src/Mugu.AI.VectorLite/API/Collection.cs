@@ -20,7 +20,7 @@ internal sealed class Collection : ICollection
     private readonly int _efSearch;
     private readonly VectorLiteOptions _options;
     private readonly ILogger? _logger;
-    private readonly object _writeLock = new();
+    private readonly ReaderWriterLockSlim _rwLock = new();
     private FileStorage? _storage;
 
     private ulong _nextRecordId = 1;
@@ -137,28 +137,38 @@ internal sealed class Collection : ICollection
         if (record.Vector.Length != Dimensions)
             throw new DimensionMismatchException(Dimensions, record.Vector.Length);
 
-        lock (_writeLock)
+        _rwLock.EnterWriteLock();
+        try
         {
-            var id = _nextRecordId++;
-            record.Id = id;
+            return Task.FromResult(InsertCore(record));
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
 
-            // 先写逻辑 WAL（确保零数据丢失）
-            if (_storage != null)
-            {
-                var walData = RecordSerializer.SerializeInsert(Name, record);
-                _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
-            }
+    /// <summary>插入核心逻辑（调用者必须持有写锁）</summary>
+    private ulong InsertCore(VectorRecord record)
+    {
+        var id = _nextRecordId++;
+        record.Id = id;
 
-            // 再更新内存
-            _hnswIndex.Insert(id, record.Vector);
-            _scalarIndex.Add(id, record.Metadata);
-            _textStore.SetPending(id, record.Text);
-            IsDirty = true;
-
-            _logger?.LogDebug("集合 '{Name}' 插入记录 {Id}", Name, id);
+        // 先写逻辑 WAL（确保零数据丢失）
+        if (_storage != null)
+        {
+            var walData = RecordSerializer.SerializeInsert(Name, record);
+            _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
         }
 
-        return Task.FromResult(record.Id);
+        // 再更新内存
+        _hnswIndex.Insert(id, record.Vector);
+        _scalarIndex.Add(id, record.Metadata);
+        _textStore.SetPending(id, record.Text);
+        IsDirty = true;
+
+        _logger?.LogDebug("集合 '{Name}' 插入记录 {Id}", Name, id);
+        return id;
     }
 
     public Task<IReadOnlyList<ulong>> InsertBatchAsync(IEnumerable<VectorRecord> records,
@@ -173,77 +183,91 @@ internal sealed class Collection : ICollection
                 throw new DimensionMismatchException(Dimensions, record.Vector.Length);
         }
 
-        var ids = new List<ulong>(recordList.Count);
-
-        lock (_writeLock)
+        _rwLock.EnterWriteLock();
+        try
         {
+            var ids = new List<ulong>(recordList.Count);
             foreach (var record in recordList)
             {
                 ct.ThrowIfCancellationRequested();
-
-                var id = _nextRecordId++;
-                record.Id = id;
-
-                // 先写逻辑 WAL
-                if (_storage != null)
-                {
-                    var walData = RecordSerializer.SerializeInsert(Name, record);
-                    _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
-                }
-
-                _hnswIndex.Insert(id, record.Vector);
-                _scalarIndex.Add(id, record.Metadata);
-                _textStore.SetPending(id, record.Text);
-                ids.Add(id);
+                ids.Add(InsertCore(record));
             }
-
-            IsDirty = true;
+            return Task.FromResult<IReadOnlyList<ulong>>(ids);
         }
-
-        return Task.FromResult<IReadOnlyList<ulong>>(ids);
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
     }
 
     public Task<VectorRecord?> GetAsync(ulong id, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        var record = AssembleRecord(id);
-        return Task.FromResult(record);
+        _rwLock.EnterReadLock();
+        try
+        {
+            var record = AssembleRecord(id);
+            return Task.FromResult(record);
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
     }
 
     public Task<bool> DeleteAsync(ulong id, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
 
-        lock (_writeLock)
+        _rwLock.EnterWriteLock();
+        try
         {
-            if (!_hnswIndex.ContainsActiveNode(id))
-                return Task.FromResult(false);
-
-            // 先写逻辑 WAL
-            if (_storage != null)
-            {
-                var walData = RecordSerializer.SerializeDelete(Name, id);
-                _storage.LogLogicalOperation(WalOperationType.RecordDelete, walData);
-            }
-
-            _hnswIndex.MarkDeleted(id);
-            _scalarIndex.Remove(id);
-            _textStore.Remove(id);
-            IsDirty = true;
-            return Task.FromResult(true);
+            return Task.FromResult(DeleteCore(id));
         }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>删除核心逻辑（调用者必须持有写锁）</summary>
+    private bool DeleteCore(ulong id)
+    {
+        if (!_hnswIndex.ContainsActiveNode(id))
+            return false;
+
+        // 先写逻辑 WAL
+        if (_storage != null)
+        {
+            var walData = RecordSerializer.SerializeDelete(Name, id);
+            _storage.LogLogicalOperation(WalOperationType.RecordDelete, walData);
+        }
+
+        _hnswIndex.MarkDeleted(id);
+        _scalarIndex.Remove(id);
+        _textStore.Remove(id);
+        IsDirty = true;
+        return true;
     }
 
     public Task<IReadOnlyList<ulong>> FindIdsByMetadataAsync(string field, object value,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        var filter = new EqualFilter(field, value);
-        var ids = _scalarIndex.Filter(filter);
-        return Task.FromResult<IReadOnlyList<ulong>>(ids.ToList());
+        _rwLock.EnterReadLock();
+        try
+        {
+            var filter = new EqualFilter(field, value);
+            var ids = _scalarIndex.Filter(filter);
+            return Task.FromResult<IReadOnlyList<ulong>>(ids.ToList());
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
     }
 
-    public async Task<ulong> UpsertAsync(VectorRecord record, string keyField,
+    public Task<ulong> UpsertAsync(VectorRecord record, string keyField,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -254,13 +278,22 @@ internal sealed class Collection : ICollection
         if (record.Metadata == null || !record.Metadata.TryGetValue(keyField, out var keyValue))
             throw new ArgumentException($"记录的 Metadata 中不包含键 '{keyField}'", nameof(keyField));
 
-        var existingIds = await FindIdsByMetadataAsync(keyField, keyValue, ct);
-        foreach (var existingId in existingIds)
+        // 整个 Upsert 在写锁下原子执行
+        _rwLock.EnterWriteLock();
+        try
         {
-            await DeleteAsync(existingId, ct);
-        }
+            var filter = new EqualFilter(keyField, keyValue);
+            var existingIds = _scalarIndex.Filter(filter).ToList();
 
-        return await InsertAsync(record, ct);
+            foreach (var existingId in existingIds)
+                DeleteCore(existingId);
+
+            return Task.FromResult(InsertCore(record));
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
     }
 
     public IQueryBuilder Query(float[] queryVector)
@@ -276,33 +309,42 @@ internal sealed class Collection : ICollection
         float[] queryVector, int topK, int? efSearch,
         FilterExpression? filter, float minScore)
     {
-        var ef = efSearch ?? _efSearch;
-        var rawResults = _queryEngine.Search(queryVector, topK, ef, filter);
-
-        var results = new List<SearchResult>();
-        foreach (var (recordId, distance) in rawResults)
+        _rwLock.EnterReadLock();
+        try
         {
-            var record = AssembleRecord(recordId);
-            if (record == null)
-                continue;
+            var ef = efSearch ?? _efSearch;
+            var rawResults = _queryEngine.Search(queryVector, topK, ef, filter);
 
-            var result = new SearchResult
+            var results = new List<SearchResult>();
+            foreach (var (recordId, distance) in rawResults)
             {
-                Record = record,
-                Distance = distance
-            };
+                var record = AssembleRecord(recordId);
+                if (record == null)
+                    continue;
 
-            if (minScore > 0f && result.Score < minScore)
-                continue;
+                var result = new SearchResult
+                {
+                    Record = record,
+                    Distance = distance
+                };
 
-            results.Add(result);
+                if (minScore > 0f && result.Score < minScore)
+                    continue;
+
+                results.Add(result);
+            }
+
+            return results;
         }
-
-        return results;
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
     }
 
     /// <summary>
     /// 按需组装记录：从 HNSW 取向量，ScalarIndex 取元数据，TextStore 取文本。
+    /// 调用者必须持有 _rwLock 的读锁或写锁。
     /// </summary>
     internal VectorRecord? AssembleRecord(ulong id)
     {
@@ -322,7 +364,8 @@ internal sealed class Collection : ICollection
     /// <summary>幂等地重放 WAL 插入记录</summary>
     internal void ReplayInsert(VectorRecord record)
     {
-        lock (_writeLock)
+        _rwLock.EnterWriteLock();
+        try
         {
             // 幂等：如果节点已存在，跳过
             if (_hnswIndex.ContainsNode(record.Id))
@@ -337,12 +380,17 @@ internal sealed class Collection : ICollection
             _textStore.SetPending(record.Id, record.Text);
             IsDirty = true;
         }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
     }
 
     /// <summary>幂等地重放 WAL 删除记录</summary>
     internal void ReplayDelete(ulong recordId)
     {
-        lock (_writeLock)
+        _rwLock.EnterWriteLock();
+        try
         {
             if (!_hnswIndex.ContainsActiveNode(recordId))
                 return;
@@ -352,6 +400,10 @@ internal sealed class Collection : ICollection
             _textStore.Remove(recordId);
             IsDirty = true;
         }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
     }
 
     /// <summary>
@@ -360,39 +412,47 @@ internal sealed class Collection : ICollection
     /// </summary>
     internal void FlushToStorage(FileStorage storage)
     {
-        if (!IsDirty && HnswRootPage != 0)
-            return;
-
-        storage.WriteTransaction(ctx =>
+        _rwLock.EnterWriteLock();
+        try
         {
-            // 释放旧页链
-            if (HnswRootPage != 0)
-                PageChainIO.FreeChain(ctx, storage, HnswRootPage);
-            if (ScalarIndexRootPage != 0)
-                PageChainIO.FreeChain(ctx, storage, ScalarIndexRootPage);
-            if (TextStoreRootPage != 0)
-                PageChainIO.FreeChain(ctx, storage, TextStoreRootPage);
+            if (!IsDirty && HnswRootPage != 0)
+                return;
 
-            // 序列化 HNSW 索引
-            var hnswData = _hnswIndex.Serialize();
-            HnswRootPage = PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData);
+            storage.WriteTransaction(ctx =>
+            {
+                // 释放旧页链
+                if (HnswRootPage != 0)
+                    PageChainIO.FreeChain(ctx, storage, HnswRootPage);
+                if (ScalarIndexRootPage != 0)
+                    PageChainIO.FreeChain(ctx, storage, ScalarIndexRootPage);
+                if (TextStoreRootPage != 0)
+                    PageChainIO.FreeChain(ctx, storage, TextStoreRootPage);
 
-            // 序列化标量索引
-            var scalarData = ScalarIndexSerializer.Serialize(_scalarIndex);
-            ScalarIndexRootPage = PageChainIO.WriteChain(ctx, storage, PageType.ScalarIndex, scalarData);
+                // 序列化 HNSW 索引
+                var hnswData = _hnswIndex.Serialize();
+                HnswRootPage = PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData);
 
-            // 序列化文本存储
-            var activeIds = _hnswIndex.GetActiveNodeIds();
-            var textData = _textStore.Serialize(activeIds);
-            TextStoreRootPage = PageChainIO.WriteChain(ctx, storage, PageType.TextData, textData);
-        });
+                // 序列化标量索引
+                var scalarData = ScalarIndexSerializer.Serialize(_scalarIndex);
+                ScalarIndexRootPage = PageChainIO.WriteChain(ctx, storage, PageType.ScalarIndex, scalarData);
 
-        // 检查点后重置文本存储的页链映射
-        _textStore.ClearPending();
-        _textStore.ResetChainState(storage, TextStoreRootPage);
-        IsDirty = false;
+                // 序列化文本存储
+                var activeIds = _hnswIndex.GetActiveNodeIds();
+                var textData = _textStore.Serialize(activeIds);
+                TextStoreRootPage = PageChainIO.WriteChain(ctx, storage, PageType.TextData, textData);
+            });
 
-        _logger?.LogDebug("集合 '{Name}' 已刷入存储", Name);
+            // 检查点成功后重置文本存储状态（事务已提交，安全清除缓冲）
+            _textStore.ClearPending();
+            _textStore.ResetChainState(storage, TextStoreRootPage);
+            IsDirty = false;
+
+            _logger?.LogDebug("集合 '{Name}' 已刷入存储", Name);
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
     }
 
     /// <summary>获取 HNSW 索引</summary>

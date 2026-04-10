@@ -43,11 +43,18 @@ internal static class RecordSerializer
         }
     }
 
+    // 反序列化安全上限
+    private const uint MaxDimensions = 100_000;
+    private const uint MaxFieldSize = 100 * 1024 * 1024; // 100MB
+    private const uint MaxNameLength = 4096;
+
     /// <summary>从 BinaryReader 反序列化一条记录</summary>
     internal static VectorRecord Read(BinaryReader reader)
     {
         var id = reader.ReadUInt64();
         var dimensions = reader.ReadUInt32();
+        if (dimensions == 0 || dimensions > MaxDimensions)
+            throw new StorageException($"记录 {id} 维度异常: {dimensions}");
         var vector = new float[dimensions];
         for (var i = 0; i < dimensions; i++)
             vector[i] = reader.ReadSingle();
@@ -55,6 +62,8 @@ internal static class RecordSerializer
         // Metadata
         Dictionary<string, object>? metadata = null;
         var metadataLen = reader.ReadUInt32();
+        if (metadataLen > MaxFieldSize)
+            throw new StorageException($"记录 {id} 元数据长度异常: {metadataLen}");
         if (metadataLen > 0)
         {
             var metadataBytes = reader.ReadBytes((int)metadataLen);
@@ -64,6 +73,8 @@ internal static class RecordSerializer
         // Text
         string? text = null;
         var textLen = reader.ReadUInt32();
+        if (textLen > MaxFieldSize)
+            throw new StorageException($"记录 {id} 文本长度异常: {textLen}");
         if (textLen > 0)
         {
             var textBytes = reader.ReadBytes((int)textLen);
@@ -123,6 +134,8 @@ internal static class RecordSerializer
         using var br = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
 
         var nameLen = br.ReadUInt32();
+        if (nameLen == 0 || nameLen > MaxNameLength)
+            throw new StorageException($"集合名长度异常: {nameLen}");
         var nameBytes = br.ReadBytes((int)nameLen);
         var collectionName = Encoding.UTF8.GetString(nameBytes);
 
@@ -137,6 +150,8 @@ internal static class RecordSerializer
         using var br = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
 
         var nameLen = br.ReadUInt32();
+        if (nameLen == 0 || nameLen > MaxNameLength)
+            throw new StorageException($"集合名长度异常: {nameLen}");
         var nameBytes = br.ReadBytes((int)nameLen);
         var collectionName = Encoding.UTF8.GetString(nameBytes);
 

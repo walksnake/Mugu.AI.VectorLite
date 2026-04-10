@@ -303,25 +303,41 @@ internal sealed class PageManager : IDisposable
 
         _logger?.LogDebug("扩展文件: {OldPages} -> {NewPages} 页", _header.TotalPages, newTotalPages);
 
-        // 先关闭映射
-        _accessor?.Dispose();
-        _mmf?.Dispose();
+        // 保存旧映射引用以便失败时恢复
+        var oldAccessor = _accessor;
+        var oldMmf = _mmf;
+        _accessor = null;
+        _mmf = null;
 
-        // 扩展文件
-        using (var fs = new FileStream(_filePath, FileMode.Open, FileAccess.Write, FileShare.None))
+        try
         {
-            fs.SetLength(newSize);
+            // 先关闭旧映射
+            oldAccessor?.Dispose();
+            oldMmf?.Dispose();
+
+            // 扩展文件
+            using (var fs = new FileStream(_filePath, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                fs.SetLength(newSize);
+            }
+
+            var oldTotalPages = _header.TotalPages;
+            _header.TotalPages = newTotalPages;
+
+            // 重新映射
+            MapFile();
+
+            // 初始化新增的空闲页
+            InitializeFreeList(oldTotalPages, newTotalPages);
+            FlushHeader();
         }
-
-        var oldTotalPages = _header.TotalPages;
-        _header.TotalPages = newTotalPages;
-
-        // 重新映射
-        MapFile();
-
-        // 初始化新增的空闲页
-        InitializeFreeList(oldTotalPages, newTotalPages);
-        FlushHeader();
+        catch
+        {
+            // 扩展失败：尝试以当前实际文件大小重新映射，恢复可用状态
+            try { MapFile(); }
+            catch { /* 映射恢复也失败，上层需处理 */ }
+            throw;
+        }
     }
 
     /// <summary>初始化空闲链表：将 [startPage, endPage) 范围内的页串联成链表</summary>
@@ -348,7 +364,7 @@ internal sealed class PageManager : IDisposable
     /// <summary>计算页在文件中的字节偏移</summary>
     private long GetPageOffset(ulong pageId)
     {
-        return (long)pageId * _pageSize;
+        return checked((long)pageId * _pageSize);
     }
 
     private void ValidatePageId(ulong pageId)

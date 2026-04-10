@@ -319,6 +319,8 @@ internal sealed class Wal : IDisposable
     /// <summary>写入一条 WAL 记录</summary>
     private void WriteRecord(ulong txId, WalOperationType opType, ulong pageId, ReadOnlySpan<byte> data)
     {
+        if (data.Length > 256 * 1024 * 1024 - MinRecordSize)
+            throw new StorageException($"WAL 数据载荷过大: {data.Length} 字节");
         var recordLength = (uint)(MinRecordSize + data.Length);
         var seqNo = ++_nextSequenceNumber;
 
@@ -356,7 +358,9 @@ internal sealed class Wal : IDisposable
             if (_walStream.Read(headerBuf, 0, 4) < 4) break;
 
             var recordLength = BinaryPrimitives.ReadUInt32LittleEndian(headerBuf.AsSpan(0, 4));
-            if (recordLength < MinRecordSize)
+            // 上界校验：单条 WAL 记录不应超过 256MB
+            const uint MaxRecordSize = 256 * 1024 * 1024;
+            if (recordLength < MinRecordSize || recordLength > MaxRecordSize)
             {
                 _logger?.LogWarning("WAL 记录长度异常: {Length} @ offset {Offset}", recordLength, startPos);
                 break;
