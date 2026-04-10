@@ -34,6 +34,10 @@ internal sealed class DotProductDistance : IDistanceFunction
             dot = ComputeVectorT(a, b);
         }
 
+        // NaN/Inf 防护
+        if (float.IsNaN(dot) || float.IsInfinity(dot))
+            return float.MaxValue;
+
         // 取负值，统一为"值越小越好"语义
         return -dot;
     }

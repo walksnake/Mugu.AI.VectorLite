@@ -10,9 +10,14 @@ public abstract class FilterExpression
 /// <summary>精确匹配过滤</summary>
 public sealed class EqualFilter : FilterExpression
 {
+    /// <summary>过滤字段名</summary>
     public string Field { get; }
+    /// <summary>过滤值</summary>
     public object Value { get; }
 
+    /// <summary>创建精确匹配过滤条件</summary>
+    /// <param name="field">字段名</param>
+    /// <param name="value">匹配值</param>
     public EqualFilter(string field, object value)
     {
         Field = field ?? throw new ArgumentNullException(nameof(field));
@@ -26,9 +31,14 @@ public sealed class EqualFilter : FilterExpression
 /// <summary>不等于过滤</summary>
 public sealed class NotEqualFilter : FilterExpression
 {
+    /// <summary>过滤字段名</summary>
     public string Field { get; }
+    /// <summary>过滤值</summary>
     public object Value { get; }
 
+    /// <summary>创建不等于过滤条件</summary>
+    /// <param name="field">字段名</param>
+    /// <param name="value">排除值</param>
     public NotEqualFilter(string field, object value)
     {
         Field = field ?? throw new ArgumentNullException(nameof(field));
@@ -47,9 +57,14 @@ public sealed class NotEqualFilter : FilterExpression
 /// <summary>集合包含过滤</summary>
 public sealed class InFilter : FilterExpression
 {
+    /// <summary>过滤字段名</summary>
     public string Field { get; }
+    /// <summary>候选值集合</summary>
     public IReadOnlyList<object> Values { get; }
 
+    /// <summary>创建集合包含过滤条件</summary>
+    /// <param name="field">字段名</param>
+    /// <param name="values">候选值列表</param>
     public InFilter(string field, IReadOnlyList<object> values)
     {
         Field = field ?? throw new ArgumentNullException(nameof(field));
@@ -70,12 +85,23 @@ public sealed class InFilter : FilterExpression
 /// <summary>范围过滤（仅数值类型）</summary>
 public sealed class RangeFilter : FilterExpression
 {
+    /// <summary>过滤字段名</summary>
     public string Field { get; }
+    /// <summary>下界（null 表示无下界）</summary>
     public IComparable? LowerBound { get; }
+    /// <summary>上界（null 表示无上界）</summary>
     public IComparable? UpperBound { get; }
+    /// <summary>是否包含下界</summary>
     public bool LowerInclusive { get; }
+    /// <summary>是否包含上界</summary>
     public bool UpperInclusive { get; }
 
+    /// <summary>创建范围过滤条件</summary>
+    /// <param name="field">字段名</param>
+    /// <param name="lowerBound">下界（null 表示无下界）</param>
+    /// <param name="upperBound">上界（null 表示无上界）</param>
+    /// <param name="lowerInclusive">是否包含下界，默认 true</param>
+    /// <param name="upperInclusive">是否包含上界，默认 false</param>
     public RangeFilter(string field,
         IComparable? lowerBound = null,
         IComparable? upperBound = null,
@@ -96,8 +122,11 @@ public sealed class RangeFilter : FilterExpression
 /// <summary>逻辑与</summary>
 public sealed class AndFilter : FilterExpression
 {
+    /// <summary>子表达式列表</summary>
     public IReadOnlyList<FilterExpression> Operands { get; }
 
+    /// <summary>创建逻辑与过滤条件</summary>
+    /// <param name="operands">子表达式</param>
     public AndFilter(params FilterExpression[] operands)
     {
         Operands = operands;
@@ -123,8 +152,11 @@ public sealed class AndFilter : FilterExpression
 /// <summary>逻辑或</summary>
 public sealed class OrFilter : FilterExpression
 {
+    /// <summary>子表达式列表</summary>
     public IReadOnlyList<FilterExpression> Operands { get; }
 
+    /// <summary>创建逻辑或过滤条件</summary>
+    /// <param name="operands">子表达式</param>
     public OrFilter(params FilterExpression[] operands)
     {
         Operands = operands;
@@ -144,8 +176,11 @@ public sealed class OrFilter : FilterExpression
 /// <summary>逻辑非</summary>
 public sealed class NotFilter : FilterExpression
 {
+    /// <summary>被取反的子表达式</summary>
     public FilterExpression Operand { get; }
 
+    /// <summary>创建逻辑非过滤条件</summary>
+    /// <param name="operand">被取反的表达式</param>
     public NotFilter(FilterExpression operand)
     {
         Operand = operand ?? throw new ArgumentNullException(nameof(operand));

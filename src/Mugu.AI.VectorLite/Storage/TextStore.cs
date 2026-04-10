@@ -103,11 +103,14 @@ internal sealed class TextStore
         }
 
         // 构建二进制布局：
-        // [EntryCount:8][DataSectionOffset:8]
+        // [Version:1][EntryCount:8][DataSectionOffset:8]
         // [TextIndex: recordId(8) + textOffset(8) per entry]
         // [TextData: textLength(4) + textBytes per entry]
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+        // 版本号
+        bw.Write((byte)1);
 
         bw.Write((ulong)entries.Count);
         // DataSectionOffset 占位（稍后回填）
@@ -142,7 +145,7 @@ internal sealed class TextStore
         bw.Flush();
 
         // 回填索引区的偏移值
-        var indexStart = 16L; // 8(EntryCount) + 8(DataSectionOffset)
+        var indexStart = 17L; // 1(Version) + 8(EntryCount) + 8(DataSectionOffset)
         for (var i = 0; i < entries.Count; i++)
         {
             ms.Position = indexStart + i * 16 + 8; // 跳过 recordId(8)
@@ -173,9 +176,15 @@ internal sealed class TextStore
         if (store._chainPageIds.Count == 0)
             return store;
 
-        // 读取头部
+        // 读取版本号
+        var versionBuf = new byte[1];
+        PageChainIO.ReadAt(storage, store._chainPageIds, 0, versionBuf);
+        if (versionBuf[0] != 1)
+            throw new StorageException($"不支持的 TextStore 序列化版本: {versionBuf[0]}（仅支持 v1）");
+
+        // 读取头部（版本号后偏移 1 字节）
         var headerBuf = new byte[16];
-        PageChainIO.ReadAt(storage, store._chainPageIds, 0, headerBuf);
+        PageChainIO.ReadAt(storage, store._chainPageIds, 1, headerBuf);
 
         var entryCount = BitConverter.ToUInt64(headerBuf, 0);
         const ulong MaxEntryCount = 100_000_000; // 1亿条上限
@@ -183,13 +192,13 @@ internal sealed class TextStore
             throw new StorageException($"TextStore 索引条目数超出上限: {entryCount} > {MaxEntryCount}");
         store._dataSectionOffset = (long)BitConverter.ToUInt64(headerBuf, 8);
 
-        // 读取索引区
+        // 读取索引区（从 17 字节开始：1 + 8 + 8）
         store._textOffsets = new Dictionary<ulong, long>((int)Math.Min(entryCount, 1_000_000));
         var indexBuf = new byte[16]; // 每条索引 16 字节
         for (ulong i = 0; i < entryCount; i++)
         {
             PageChainIO.ReadAt(storage, store._chainPageIds,
-                16 + (long)i * 16, indexBuf);
+                17 + (long)i * 16, indexBuf);
             var recordId = BitConverter.ToUInt64(indexBuf, 0);
             var textOffset = BitConverter.ToInt64(indexBuf, 8);
             store._textOffsets[recordId] = textOffset;
@@ -220,8 +229,15 @@ internal sealed class TextStore
 
         // 重新加载索引
         _chainPageIds = PageChainIO.WalkChain(storage, newRootPage);
+
+        // 读取版本号
+        var versionBuf = new byte[1];
+        PageChainIO.ReadAt(storage, _chainPageIds, 0, versionBuf);
+        if (versionBuf[0] != 1)
+            throw new StorageException($"不支持的 TextStore 序列化版本: {versionBuf[0]}（仅支持 v1）");
+
         var headerBuf = new byte[16];
-        PageChainIO.ReadAt(storage, _chainPageIds, 0, headerBuf);
+        PageChainIO.ReadAt(storage, _chainPageIds, 1, headerBuf);
 
         var entryCount = BitConverter.ToUInt64(headerBuf, 0);
         const ulong MaxEntryCountInReset = 100_000_000;
@@ -233,7 +249,7 @@ internal sealed class TextStore
         var indexBuf = new byte[16];
         for (ulong i = 0; i < entryCount; i++)
         {
-            PageChainIO.ReadAt(storage, _chainPageIds, 16 + (long)i * 16, indexBuf);
+            PageChainIO.ReadAt(storage, _chainPageIds, 17 + (long)i * 16, indexBuf);
             var recordId = BitConverter.ToUInt64(indexBuf, 0);
             var textOffset = BitConverter.ToInt64(indexBuf, 8);
             _textOffsets[recordId] = textOffset;

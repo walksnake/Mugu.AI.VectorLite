@@ -29,6 +29,9 @@ internal static class CollectionCatalog
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
 
+        // 版本号
+        bw.Write((byte)1);
+
         bw.Write((uint)entries.Count);
 
         foreach (var entry in entries)
@@ -55,6 +58,11 @@ internal static class CollectionCatalog
     {
         using var ms = new MemoryStream(data.ToArray());
         using var br = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
+
+        // 读取并验证版本号
+        var version = br.ReadByte();
+        if (version != 1)
+            throw new CorruptedFileException($"不支持的集合目录序列化版本: {version}（仅支持 v1）");
 
         var count = br.ReadUInt32();
         var entries = new List<CollectionCatalogEntry>((int)count);

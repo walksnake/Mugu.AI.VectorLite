@@ -34,6 +34,10 @@ internal sealed class EuclideanDistance : IDistanceFunction
             sumSq = ComputeVectorT(a, b);
         }
 
+        // NaN/Inf 防护
+        if (float.IsNaN(sumSq) || float.IsInfinity(sumSq))
+            return float.MaxValue;
+
         return MathF.Sqrt(sumSq);
     }
 

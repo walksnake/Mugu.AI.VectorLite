@@ -141,13 +141,30 @@ internal sealed class HNSWIndex
         var efActual = Math.Max(efSearch, topK);
         var results = SearchLayer(queryVector, ep, efActual, 0, candidateIds);
 
-        // 过滤已删除节点和不符合过滤条件的节点，取 top-K
-        return results
-            .Where(r => _graph.Nodes.TryGetValue(r.RecordId, out var n) && !n.IsDeleted)
-            .Where(r => candidateIds == null || candidateIds.Contains(r.RecordId))
-            .OrderBy(r => r.Distance)
-            .Take(topK)
-            .ToList();
+        // 过滤已删除节点和不符合过滤条件的节点，取 top-K（使用堆选择避免全排序）
+        var heap = new PriorityQueue<(ulong RecordId, float Distance), float>();
+        foreach (var r in results)
+        {
+            if (!_graph.Nodes.TryGetValue(r.RecordId, out var n) || n.IsDeleted)
+                continue;
+            if (candidateIds != null && !candidateIds.Contains(r.RecordId))
+                continue;
+
+            if (heap.Count < topK)
+            {
+                heap.Enqueue((r.RecordId, r.Distance), -r.Distance); // 最大堆
+            }
+            else if (heap.TryPeek(out _, out var worstPriority) && r.Distance < -worstPriority)
+            {
+                heap.DequeueEnqueue((r.RecordId, r.Distance), -r.Distance);
+            }
+        }
+
+        // 从堆中取出并按距离升序排列
+        var output = new (ulong RecordId, float Distance)[heap.Count];
+        for (var i = output.Length - 1; i >= 0; i--)
+            output[i] = heap.Dequeue();
+        return output;
     }
 
     /// <summary>检查是否需要压缩（已删除节点超过20%）</summary>
@@ -170,6 +187,9 @@ internal sealed class HNSWIndex
     {
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms);
+
+        // 版本号（用于未来格式升级）
+        bw.Write((byte)1);
 
         // 图元信息
         bw.Write(_graph.EntryPointId);
@@ -219,7 +239,16 @@ internal sealed class HNSWIndex
         const uint MaxNeighborCount = 10_000;  // 单层邻居数上限
 
         var offset = 0;
-        if (data.Length < 16)
+
+        // 读取并验证版本号
+        if (data.Length < 1)
+            throw new StorageException("HNSW 索引数据为空");
+        var version = data[offset];
+        offset += 1;
+        if (version != 1)
+            throw new StorageException($"不支持的 HNSW 序列化版本: {version}（仅支持 v1）");
+
+        if (offset + 16 > data.Length)
             throw new StorageException("HNSW 索引数据过短，无法读取头部");
 
         index._graph.EntryPointId = BinaryPrimitives.ReadUInt64LittleEndian(data[offset..]);

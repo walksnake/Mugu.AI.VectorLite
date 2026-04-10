@@ -35,6 +35,11 @@ internal sealed class CosineDistance : IDistanceFunction
             ComputeVectorT(a, b, out dot, out normA, out normB);
         }
 
+        // NaN/Inf 防护：输入含异常值时返回最大距离
+        if (float.IsNaN(dot) || float.IsNaN(normA) || float.IsNaN(normB) ||
+            float.IsInfinity(dot) || float.IsInfinity(normA) || float.IsInfinity(normB))
+            return 2f;
+
         var denominator = MathF.Sqrt(normA * normB);
         if (denominator < float.Epsilon) return 1f;
 

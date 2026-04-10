@@ -17,9 +17,10 @@ public class BoundsCheckTests
     [Fact]
     public void HNSWDeserialize_InvalidDimensions_ShouldThrow()
     {
-        var data = new byte[8 + 4 + 4 + 8 + 4 + 1 + 4];
+        var data = new byte[1 + 8 + 4 + 4 + 8 + 4 + 1 + 4];
         var offset = 0;
 
+        data[offset] = 1; offset += 1; // 版本号
         BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(offset), 1); offset += 8;
         BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(offset), 0); offset += 4;
         BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(offset), 1); offset += 4;
@@ -35,10 +36,11 @@ public class BoundsCheckTests
     [Fact]
     public void HNSWDeserialize_TruncatedData_ShouldThrow()
     {
-        var data = new byte[16];
-        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(0), 0);
-        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(8), 0);
-        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(12), 10);
+        var data = new byte[1 + 16];
+        data[0] = 1; // 版本号
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(1), 0);
+        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(9), 0);
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(13), 10);
 
         var act = () => HNSWIndex.Deserialize(data.AsSpan(), CosineFunc);
         act.Should().Throw<StorageException>();
@@ -47,10 +49,11 @@ public class BoundsCheckTests
     [Fact]
     public void HNSWDeserialize_ExcessiveMaxLayer_ShouldThrow()
     {
-        var data = new byte[16];
-        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(0), 0);
-        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(8), 999);
-        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(12), 0);
+        var data = new byte[1 + 16];
+        data[0] = 1; // 版本号
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(1), 0);
+        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(9), 999);
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(13), 0);
 
         var act = () => HNSWIndex.Deserialize(data.AsSpan(), CosineFunc);
         act.Should().Throw<StorageException>();
@@ -105,6 +108,7 @@ public class BoundsCheckTests
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms);
 
+        bw.Write((byte)1); // 版本号
         bw.Write(1UL);   // EntryPointId = 1
         bw.Write(0);     // MaxLayer = 0
         bw.Write(1u);    // NodeCount = 1

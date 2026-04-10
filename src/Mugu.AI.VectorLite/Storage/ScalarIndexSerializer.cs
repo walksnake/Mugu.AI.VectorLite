@@ -20,6 +20,9 @@ internal static class ScalarIndexSerializer
         using var ms = new MemoryStream();
         using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
 
+        // 版本号
+        bw.Write((byte)1);
+
         var metadata = index.RecordMetadata;
         bw.Write((uint)metadata.Count);
 
@@ -46,6 +49,11 @@ internal static class ScalarIndexSerializer
     {
         using var ms = new MemoryStream(data.ToArray());
         using var br = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
+
+        // 读取并验证版本号
+        var version = br.ReadByte();
+        if (version != 1)
+            throw new CorruptedFileException($"不支持的标量索引序列化版本: {version}（仅支持 v1）");
 
         var recordCount = br.ReadUInt32();
         var recordMetadata = new Dictionary<ulong, Dictionary<string, object>>((int)recordCount);

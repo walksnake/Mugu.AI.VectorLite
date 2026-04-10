@@ -161,11 +161,29 @@ internal sealed class Collection : ICollection
             _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
         }
 
-        // 再更新内存
-        _hnswIndex.Insert(id, record.Vector);
-        _scalarIndex.Add(id, record.Metadata);
-        _textStore.SetPending(id, record.Text);
-        IsDirty = true;
+        // 再更新内存（若部分失败则回滚已更新的部分）
+        var hnswInserted = false;
+        var scalarAdded = false;
+        try
+        {
+            _hnswIndex.Insert(id, record.Vector);
+            hnswInserted = true;
+
+            _scalarIndex.Add(id, record.Metadata);
+            scalarAdded = true;
+
+            _textStore.SetPending(id, record.Text);
+            IsDirty = true;
+        }
+        catch
+        {
+            // 回滚已完成的内存操作
+            if (scalarAdded)
+                _scalarIndex.Remove(id);
+            if (hnswInserted)
+                _hnswIndex.MarkDeleted(id);
+            throw;
+        }
 
         _logger?.LogDebug("集合 '{Name}' 插入记录 {Id}", Name, id);
         return id;
@@ -223,6 +241,28 @@ internal sealed class Collection : ICollection
         try
         {
             return Task.FromResult(DeleteCore(id));
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    public Task<int> DeleteBatchAsync(IEnumerable<ulong> ids, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+
+        _rwLock.EnterWriteLock();
+        try
+        {
+            var count = 0;
+            foreach (var id in ids)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (DeleteCore(id))
+                    count++;
+            }
+            return Task.FromResult(count);
         }
         finally
         {

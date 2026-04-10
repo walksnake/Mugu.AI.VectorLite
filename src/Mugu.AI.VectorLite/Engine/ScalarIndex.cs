@@ -129,13 +129,15 @@ internal sealed class ScalarIndex
 
             if (lowerBound != null)
             {
-                var cmp = comparable.CompareTo(lowerBound);
+                var cmp = SafeCompareTo(comparable, lowerBound);
+                if (cmp == null) continue; // 类型不可比较，跳过
                 inRange = lowerInclusive ? cmp >= 0 : cmp > 0;
             }
 
             if (inRange && upperBound != null)
             {
-                var cmp = comparable.CompareTo(upperBound);
+                var cmp = SafeCompareTo(comparable, upperBound);
+                if (cmp == null) continue;
                 inRange = upperInclusive ? cmp <= 0 : cmp < 0;
             }
 
@@ -144,6 +146,46 @@ internal sealed class ScalarIndex
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 类型安全的比较：将数值类型归一化为 double 后比较，避免跨类型 CompareTo 抛异常。
+    /// 返回 null 表示不可比较。
+    /// </summary>
+    private static int? SafeCompareTo(IComparable a, IComparable b)
+    {
+        // 同类型直接比较
+        if (a.GetType() == b.GetType())
+            return a.CompareTo(b);
+
+        // 数值类型归一化为 double
+        if (TryToDouble(a, out var da) && TryToDouble(b, out var db))
+            return da.CompareTo(db);
+
+        // 类型不兼容
+        try
+        {
+            return a.CompareTo(b);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryToDouble(object value, out double result)
+    {
+        switch (value)
+        {
+            case long l: result = l; return true;
+            case int i: result = i; return true;
+            case double d: result = d; return true;
+            case float f: result = f; return true;
+            case short s: result = s; return true;
+            case byte b: result = b; return true;
+            case decimal m: result = (double)m; return true;
+            default: result = 0; return false;
+        }
     }
 
     /// <summary>记录总数</summary>

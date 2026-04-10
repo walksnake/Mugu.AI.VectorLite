@@ -172,6 +172,7 @@ public sealed class VectorLiteDB : IDisposable
         }
     }
 
+    /// <inheritdoc />
     public void Dispose()
     {
         if (_disposed) return;
@@ -179,8 +180,14 @@ public sealed class VectorLiteDB : IDisposable
 
         _checkpointTimer?.Dispose();
 
-        try { FlushAndCheckpoint(); }
-        catch { /* 尽力而为 */ }
+        try
+        {
+            FlushAndCheckpoint();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "关闭时检查点失败，数据可能需要通过 WAL 恢复");
+        }
 
         _storage.Dispose();
         _rwLock.Dispose();

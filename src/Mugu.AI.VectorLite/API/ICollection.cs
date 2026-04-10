@@ -26,6 +26,9 @@ public interface ICollection
     /// <summary>根据ID删除记录</summary>
     Task<bool> DeleteAsync(ulong id, CancellationToken ct = default);
 
+    /// <summary>批量删除记录，返回实际删除的数量</summary>
+    Task<int> DeleteBatchAsync(IEnumerable<ulong> ids, CancellationToken ct = default);
+
     /// <summary>根据元数据字段查找记录ID</summary>
     Task<IReadOnlyList<ulong>> FindIdsByMetadataAsync(string field, object value, CancellationToken ct = default);
 
