@@ -76,6 +76,10 @@ internal sealed class FileStorage : IDisposable
     {
         var pageId = _pageManager.AllocatePage(type);
         _wal.LogPageAlloc(txId, pageId, type);
+        // 将 FileHeader（FreePageListHead 等）的变更也写入 WAL，
+        // 确保崩溃恢复时能正确重放空闲链表状态
+        var headerBytes = _pageManager.SerializeCurrentHeader();
+        _wal.LogPageWrite(txId, 0, headerBytes);
         return pageId;
     }
 
@@ -85,6 +89,9 @@ internal sealed class FileStorage : IDisposable
         // 先记录WAL，再实际释放
         _wal.LogPageFree(txId, pageId);
         _pageManager.FreePage(pageId);
+        // 将 FileHeader 的 FreePageListHead 变更写入 WAL
+        var headerBytes = _pageManager.SerializeCurrentHeader();
+        _wal.LogPageWrite(txId, 0, headerBytes);
     }
 
     /// <summary>写入完整页数据（通过 WAL 记录）</summary>

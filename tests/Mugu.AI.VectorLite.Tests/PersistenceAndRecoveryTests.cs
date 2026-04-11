@@ -278,6 +278,30 @@ public class PersistenceAndRecoveryTests : IDisposable
         }
     }
 
+    // ===== P2-4：DeleteCollection 写 WAL 防止复活 =====
+
+    [Fact]
+    public async Task DeleteCollection_ShouldNotResurrectAfterWalRecovery()
+    {
+        // 不执行Checkpoint，通过WAL日志保留删除记录，验证重新打开后集合不复活
+        var path = TempDb();
+
+        {
+            using var db = new VectorLiteDB(path, new VectorLiteOptions
+                { CheckpointInterval = Timeout.InfiniteTimeSpan });
+            var coll = db.GetOrCreateCollection("to_delete", Dims);
+            await coll.InsertAsync(new VectorRecord { Vector = Vec(1, 2, 3, 4) });
+            db.DeleteCollection("to_delete");
+            // 不调用 Checkpoint，WAL 保留了 CollectionDelete 记录
+        }
+
+        // 重新打开，集合应不存在（WAL 恢复了删除操作）
+        {
+            using var db = new VectorLiteDB(path);
+            db.CollectionExists("to_delete").Should().BeFalse();
+        }
+    }
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)

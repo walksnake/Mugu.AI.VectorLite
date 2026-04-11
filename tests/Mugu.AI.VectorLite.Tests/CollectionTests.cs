@@ -372,6 +372,89 @@ public class CollectionTests : IDisposable
         _coll.Count.Should().Be(1);
     }
 
+    // ===== P1-5：ReplayInsert 幂等修复 =====
+
+    [Fact]
+    public async Task ReplayInsert_ActiveNode_ShouldBeIdempotent()
+    {
+        // 场景：节点已存在且活跃，ReplayInsert 应跳过（幂等性）
+        var id = await _coll.InsertAsync(new VectorRecord { Vector = Vec(1, 2, 3, 4, 5, 6, 7, 8) });
+        var collImpl = (Mugu.AI.VectorLite.Collection)_coll;
+
+        // 重放相同记录，应不重复插入
+        collImpl.ReplayInsert(new VectorRecord { Id = id, Vector = Vec(1, 2, 3, 4, 5, 6, 7, 8) });
+
+        _coll.Count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task InsertAsync_ShouldNotModifyCallerRecord()
+    {
+        // P2-5：InsertCore 不应修改调用方传入的 record.Id
+        var record = new VectorRecord { Vector = Vec(1, 0, 0, 0, 0, 0, 0, 0) };
+        var originalId = record.Id; // 应为 0（默认值）
+
+        var assignedId = await _coll.InsertAsync(record);
+
+        // 分配的 ID 应通过返回值传递，而非修改 record.Id
+        assignedId.Should().Be(1);
+        record.Id.Should().Be(originalId); // record.Id 保持不变
+    }
+
+    // ===== P1-4：Checkpoint 触发 Compaction =====
+
+    [Fact]
+    public async Task Checkpoint_ShouldTriggerCompaction_WhenDeletionRatioHigh()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"vlite_compact_{Guid.NewGuid():N}.vldb");
+        try
+        {
+            using var db = new VectorLiteDB(dbPath, new VectorLiteOptions
+                { CheckpointInterval = Timeout.InfiniteTimeSpan });
+            var coll = db.GetOrCreateCollection("compact_test", Dims);
+            var ids = new List<ulong>();
+            for (var i = 0; i < 10; i++)
+                ids.Add(await coll.InsertAsync(new VectorRecord { Vector = Vec(i, i, i, i, i, i, i, i) }));
+
+            // 删除超过20%的节点
+            for (var i = 0; i < 3; i++)
+                await coll.DeleteAsync(ids[i]);
+
+            // 执行 Checkpoint，应触发 Compaction
+            db.Checkpoint();
+
+            // 验证集合数据正确
+            coll.Count.Should().Be(7);
+        }
+        finally
+        {
+            try { File.Delete(dbPath); } catch { }
+            try { File.Delete(dbPath + "-wal"); } catch { }
+        }
+    }
+
+    // ===== P2-3：Collection IDisposable =====
+
+    [Fact]
+    public void Collection_Dispose_ShouldNotThrow()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"vlite_disp_{Guid.NewGuid():N}.vldb");
+        try
+        {
+            using var db = new VectorLiteDB(dbPath);
+            var coll = (Mugu.AI.VectorLite.Collection)db.GetOrCreateCollection("disp_test", Dims);
+
+            // 直接调用 Dispose 不应抛出异常
+            var act = () => coll.Dispose();
+            act.Should().NotThrow();
+        }
+        finally
+        {
+            try { File.Delete(dbPath); } catch { }
+            try { File.Delete(dbPath + "-wal"); } catch { }
+        }
+    }
+
     public void Dispose()
     {
         _db?.Dispose();

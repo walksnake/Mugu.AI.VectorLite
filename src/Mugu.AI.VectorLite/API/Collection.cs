@@ -10,7 +10,7 @@ namespace Mugu.AI.VectorLite;
 /// 内部持有 HNSW 索引、标量索引和文本存储。
 /// 向量数据常驻内存（HNSW 节点），文本按需懒加载。
 /// </summary>
-internal sealed class Collection : ICollection
+internal sealed class Collection : ICollection, IDisposable
 {
     private HNSWIndex _hnswIndex;
     private ScalarIndex _scalarIndex;
@@ -152,12 +152,11 @@ internal sealed class Collection : ICollection
     private ulong InsertCore(VectorRecord record)
     {
         var id = _nextRecordId++;
-        record.Id = id;
 
-        // 先写逻辑 WAL（确保零数据丢失）
+        // 不修改调用方传入的 record 对象，id 仅在内部使用
         if (_storage != null)
         {
-            var walData = RecordSerializer.SerializeInsert(Name, record);
+            var walData = RecordSerializer.SerializeInsert(Name, id, record);
             _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
         }
 
@@ -411,8 +410,8 @@ internal sealed class Collection : ICollection
         _rwLock.EnterWriteLock();
         try
         {
-            // 幂等：如果节点已存在，跳过
-            if (_hnswIndex.ContainsNode(record.Id))
+            // 幂等：如果节点已存在且活跃，跳过（使用 ContainsActiveNode 避免重复插入已删除节点）
+            if (_hnswIndex.ContainsActiveNode(record.Id))
                 return;
 
             // 确保 nextRecordId 不回退
@@ -461,6 +460,13 @@ internal sealed class Collection : ICollection
         {
             if (!IsDirty && HnswRootPage != 0)
                 return;
+
+            // 检查是否需要对 HNSW 图进行压缩（已删除节点超过20%时重建索引）
+            if (_hnswIndex.NeedsCompaction())
+            {
+                _logger?.LogInformation("集合 '{Name}' 触发 HNSW 图压缩，当前删除比例超过20%", Name);
+                CompactHnswIndex();
+            }
 
             // 保存旧根页引用，异常时恢复
             var oldHnswRoot = HnswRootPage;
@@ -518,4 +524,27 @@ internal sealed class Collection : ICollection
 
     /// <summary>获取标量索引</summary>
     internal ScalarIndex ScalarIndexInstance => _scalarIndex;
+
+    /// <summary>释放内部的 ReaderWriterLockSlim 等非托管资源</summary>
+    public void Dispose()
+    {
+        _rwLock.Dispose();
+    }
+
+    /// <summary>
+    /// 重建 HNSW 索引：移除所有已删除节点，减少内存占用并提升搜索精度。
+    /// 调用方必须持有写锁。
+    /// </summary>
+    private void CompactHnswIndex()
+    {
+        var activeNodes = _hnswIndex.GetActiveNodes().ToList();
+        var newIndex = new HNSWIndex(_distFunc, _options.HnswM, _options.HnswEfConstruction);
+        foreach (var (recordId, vector) in activeNodes)
+        {
+            newIndex.Insert(recordId, vector);
+        }
+        _hnswIndex = newIndex;
+        _queryEngine = new QueryEngine(_hnswIndex, _scalarIndex, _distFunc);
+        _logger?.LogDebug("集合 '{Name}' HNSW 图压缩完成，活跃节点数={Count}", Name, activeNodes.Count);
+    }
 }

@@ -67,6 +67,9 @@ internal static class ScalarIndexSerializer
             for (var j = 0u; j < fieldCount; j++)
             {
                 var nameLen = br.ReadUInt32();
+                // 防止文件损坏时分配超大内存
+                if (nameLen == 0 || nameLen > 4096)
+                    throw new CorruptedFileException($"字段名长度异常: {nameLen}，可能文件已损坏");
                 var nameBytes = br.ReadBytes((int)nameLen);
                 var fieldName = Encoding.UTF8.GetString(nameBytes);
                 var value = ReadValue(br);

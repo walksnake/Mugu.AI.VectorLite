@@ -171,39 +171,11 @@ internal sealed class TextStore
         if (textStoreRootPage == 0)
             return store;
 
-        // 遍历页链，缓存页ID序列
         store._chainPageIds = PageChainIO.WalkChain(storage, textStoreRootPage);
         if (store._chainPageIds.Count == 0)
             return store;
 
-        // 读取版本号
-        var versionBuf = new byte[1];
-        PageChainIO.ReadAt(storage, store._chainPageIds, 0, versionBuf);
-        if (versionBuf[0] != 1)
-            throw new StorageException($"不支持的 TextStore 序列化版本: {versionBuf[0]}（仅支持 v1）");
-
-        // 读取头部（版本号后偏移 1 字节）
-        var headerBuf = new byte[16];
-        PageChainIO.ReadAt(storage, store._chainPageIds, 1, headerBuf);
-
-        var entryCount = BitConverter.ToUInt64(headerBuf, 0);
-        const ulong MaxEntryCount = 100_000_000; // 1亿条上限
-        if (entryCount > MaxEntryCount)
-            throw new StorageException($"TextStore 索引条目数超出上限: {entryCount} > {MaxEntryCount}");
-        store._dataSectionOffset = (long)BitConverter.ToUInt64(headerBuf, 8);
-
-        // 读取索引区（从 17 字节开始：1 + 8 + 8）
-        store._textOffsets = new Dictionary<ulong, long>((int)Math.Min(entryCount, 1_000_000));
-        var indexBuf = new byte[16]; // 每条索引 16 字节
-        for (ulong i = 0; i < entryCount; i++)
-        {
-            PageChainIO.ReadAt(storage, store._chainPageIds,
-                17 + (long)i * 16, indexBuf);
-            var recordId = BitConverter.ToUInt64(indexBuf, 0);
-            var textOffset = BitConverter.ToInt64(indexBuf, 8);
-            store._textOffsets[recordId] = textOffset;
-        }
-
+        store.LoadIndexState(store._chainPageIds);
         return store;
     }
 
@@ -227,29 +199,35 @@ internal sealed class TextStore
             return;
         }
 
-        // 重新加载索引
         _chainPageIds = PageChainIO.WalkChain(storage, newRootPage);
+        LoadIndexState(_chainPageIds);
+    }
 
+    /// <summary>从已知页链列表中加载文本索引状态（版本号验证 + 头部 + 索引区）</summary>
+    private void LoadIndexState(List<ulong> chainPageIds)
+    {
         // 读取版本号
         var versionBuf = new byte[1];
-        PageChainIO.ReadAt(storage, _chainPageIds, 0, versionBuf);
+        PageChainIO.ReadAt(_storage!, chainPageIds, 0, versionBuf);
         if (versionBuf[0] != 1)
             throw new StorageException($"不支持的 TextStore 序列化版本: {versionBuf[0]}（仅支持 v1）");
 
+        // 读取头部：EntryCount + DataSectionOffset
         var headerBuf = new byte[16];
-        PageChainIO.ReadAt(storage, _chainPageIds, 1, headerBuf);
+        PageChainIO.ReadAt(_storage!, chainPageIds, 1, headerBuf);
 
         var entryCount = BitConverter.ToUInt64(headerBuf, 0);
-        const ulong MaxEntryCountInReset = 100_000_000;
-        if (entryCount > MaxEntryCountInReset)
-            throw new StorageException($"TextStore 索引条目数超出上限: {entryCount}");
+        const ulong MaxEntryCount = 100_000_000;
+        if (entryCount > MaxEntryCount)
+            throw new StorageException($"TextStore 索引条目数超出上限: {entryCount} > {MaxEntryCount}");
         _dataSectionOffset = (long)BitConverter.ToUInt64(headerBuf, 8);
 
+        // 读取索引区（每条 16 字节：recordId + textOffset）
         _textOffsets = new Dictionary<ulong, long>((int)Math.Min(entryCount, 1_000_000));
         var indexBuf = new byte[16];
         for (ulong i = 0; i < entryCount; i++)
         {
-            PageChainIO.ReadAt(storage, _chainPageIds, 17 + (long)i * 16, indexBuf);
+            PageChainIO.ReadAt(_storage!, chainPageIds, 17 + (long)i * 16, indexBuf);
             var recordId = BitConverter.ToUInt64(indexBuf, 0);
             var textOffset = BitConverter.ToInt64(indexBuf, 8);
             _textOffsets[recordId] = textOffset;

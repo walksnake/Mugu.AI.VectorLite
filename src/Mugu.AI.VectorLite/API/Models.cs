@@ -27,7 +27,7 @@ public sealed class SearchResult
 
     /// <summary>
     /// 相似度得分。
-    /// 对于余弦距离：Score = 1 - Distance，范围 [0, 2]，越高越相似。
+    /// 对于余弦距离（Distance ∈ [0, 2]）：Score = 1 - Distance，范围 [-1, 1]，越高越相似。
     /// 对于其他度量（欧几里得、点积），Score = 1 - Distance 可能为负值，
     /// 建议直接使用 Distance 字段进行比较。
     /// </summary>

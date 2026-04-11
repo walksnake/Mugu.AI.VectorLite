@@ -110,6 +110,43 @@ internal static class RecordSerializer
         return ms.ToArray();
     }
 
+    /// <summary>序列化 WAL RecordInsert 数据，id 由调用方提供（不修改 record.Id）</summary>
+    internal static byte[] SerializeInsert(string collectionName, ulong id, VectorRecord record)
+    {
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+        var nameBytes = Encoding.UTF8.GetBytes(collectionName);
+        bw.Write((uint)nameBytes.Length);
+        bw.Write(nameBytes);
+        // 写入分配的 id（而非 record.Id，避免修改调用方对象）
+        bw.Write(id);
+        bw.Write((uint)record.Vector.Length);
+        foreach (var v in record.Vector)
+            bw.Write(v);
+        if (record.Metadata is { Count: > 0 })
+        {
+            var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(record.Metadata);
+            bw.Write((uint)json.Length);
+            bw.Write(json);
+        }
+        else
+        {
+            bw.Write(0u);
+        }
+        if (record.Text != null)
+        {
+            var textBytes = Encoding.UTF8.GetBytes(record.Text);
+            bw.Write((uint)textBytes.Length);
+            bw.Write(textBytes);
+        }
+        else
+        {
+            bw.Write(0u);
+        }
+        bw.Flush();
+        return ms.ToArray();
+    }
+
     /// <summary>
     /// 序列化 WAL RecordDelete 数据：CollectionName + RecordId
     /// </summary>
@@ -157,6 +194,30 @@ internal static class RecordSerializer
 
         var recordId = br.ReadUInt64();
         return (collectionName, recordId);
+    }
+
+    /// <summary>序列化 WAL CollectionDelete 数据：CollectionName</summary>
+    internal static byte[] SerializeDeleteCollection(string collectionName)
+    {
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+        var nameBytes = Encoding.UTF8.GetBytes(collectionName);
+        bw.Write((uint)nameBytes.Length);
+        bw.Write(nameBytes);
+        bw.Flush();
+        return ms.ToArray();
+    }
+
+    /// <summary>反序列化 WAL CollectionDelete 数据</summary>
+    internal static string DeserializeDeleteCollection(ReadOnlySpan<byte> data)
+    {
+        using var ms = new MemoryStream(data.ToArray());
+        using var br = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
+        var nameLen = br.ReadUInt32();
+        if (nameLen == 0 || nameLen > MaxNameLength)
+            throw new StorageException($"集合名长度异常: {nameLen}");
+        var nameBytes = br.ReadBytes((int)nameLen);
+        return Encoding.UTF8.GetString(nameBytes);
     }
 
     /// <summary>反序列化元数据 JSON，按类型还原值</summary>
