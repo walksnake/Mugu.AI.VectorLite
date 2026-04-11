@@ -76,9 +76,15 @@ internal static class PageChainIO
 
         using var ms = new MemoryStream();
         var currentPageId = firstPageId;
+        // 循环检测：损坏文件中 NextPageId 可能指向已访问页，若不加防护将无限循环
+        var visited = new HashSet<ulong>();
 
         while (currentPageId != 0)
         {
+            if (!visited.Add(currentPageId))
+                throw new CorruptedFileException(
+                    $"页链中检测到循环引用，页ID={currentPageId}，可能文件已损坏");
+
             var header = storage.ReadPageHeader(currentPageId);
             if (header.UsedBytes > 0)
             {
@@ -100,9 +106,15 @@ internal static class PageChainIO
     {
         var pageIds = new List<ulong>();
         var currentPageId = firstPageId;
+        // 循环检测：损坏文件中 NextPageId 可能形成环，若不加防护将 OOM 或无限挂起
+        var visited = new HashSet<ulong>();
 
         while (currentPageId != 0)
         {
+            if (!visited.Add(currentPageId))
+                throw new CorruptedFileException(
+                    $"页链中检测到循环引用，页ID={currentPageId}，可能文件已损坏");
+
             pageIds.Add(currentPageId);
             var header = storage.ReadPageHeader(currentPageId);
             currentPageId = header.NextPageId;
@@ -151,16 +163,33 @@ internal static class PageChainIO
         return bytesRead;
     }
 
-    /// <summary>释放整个页链的所有页</summary>
+    /// <summary>
+    /// 释放整个页链的所有页。
+    /// 幂等保护：若遇到已为 Free 状态的页则停止，
+    /// 防止崩溃恢复时双重释放导致 free list 形成循环环。
+    /// </summary>
     internal static void FreeChain(
         FileStorage.WriteContext ctx,
         FileStorage storage,
         ulong firstPageId)
     {
         var currentPageId = firstPageId;
+        // 循环检测：防止损坏页链的 NextPageId 形成环导致无限循环
+        var visited = new HashSet<ulong>();
+
         while (currentPageId != 0)
         {
+            if (!visited.Add(currentPageId))
+                throw new CorruptedFileException(
+                    $"FreeChain 检测到循环引用，页ID={currentPageId}，可能文件已损坏");
+
             var header = storage.ReadPageHeader(currentPageId);
+
+            // 幂等保护：该页已在 free list 中，说明此链在之前的崩溃恢复中已被释放，
+            // 后续页同样已释放，直接停止，避免 free list 形成环
+            if (header.PageType == PageType.Free)
+                break;
+
             var nextPageId = header.NextPageId;
             ctx.FreePage(currentPageId);
             currentPageId = nextPageId;

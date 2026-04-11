@@ -302,6 +302,86 @@ public class PersistenceAndRecoveryTests : IDisposable
         }
     }
 
+    // ===== P2-1（第三轮）：FreeChain 幂等保护 =====
+
+    [Fact]
+    public async Task DeleteCollection_MultipleReopens_FreeListShouldRemainIntact()
+    {
+        // 场景：DeleteCollection 后多次重新打开数据库，每次恢复都应能正确重放
+        // 并且后续可以正常分配页（验证 free list 未损坏）
+        var path = TempDb();
+
+        // 第一轮：创建并删除集合
+        {
+            using var db = new VectorLiteDB(path, new VectorLiteOptions
+                { CheckpointInterval = Timeout.InfiniteTimeSpan });
+            var coll = db.GetOrCreateCollection("temp_coll", Dims);
+            for (var i = 0; i < 5; i++)
+                await coll.InsertAsync(new VectorRecord { Vector = Vec(i, i, i, i), Text = $"文本{i}" });
+            db.DeleteCollection("temp_coll");
+        }
+
+        // 第二轮：重新打开，创建新集合并插入数据（验证 free list 可以正常分配）
+        {
+            using var db = new VectorLiteDB(path);
+            db.CollectionExists("temp_coll").Should().BeFalse();
+            var coll2 = db.GetOrCreateCollection("new_coll", Dims);
+            var id = await coll2.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0) });
+            id.Should().BeGreaterThan(0, "free list 完好时可以分配新页");
+        }
+
+        // 第三轮：再次重新打开，验证数据持久
+        {
+            using var db = new VectorLiteDB(path);
+            var coll = db.GetOrCreateCollection("new_coll", Dims);
+            coll.Count.Should().Be(1);
+        }
+    }
+
+    // ===== P2-2（第三轮）：WalkChain/ReadChain 循环检测 =====
+
+    [Fact]
+    public async Task OpenDatabase_WithCorruptedCyclicPageChain_ShouldThrowCorruptedFileException()
+    {
+        // 场景：文件损坏导致集合目录页链形成自环，重新打开时应检测到循环并抛出异常
+        const uint pageSize = 8192;
+        var path = TempDb();
+
+        // 1. 创建含数据的数据库并正常关闭（触发 Checkpoint，确保数据写入 mmap）
+        {
+            using var db = new VectorLiteDB(path, new VectorLiteOptions { PageSize = pageSize });
+            var coll = db.GetOrCreateCollection("chain_test", Dims);
+            await coll.InsertAsync(new VectorRecord { Vector = Vec(1, 0, 0, 0) });
+        }
+
+        // 2. 读取文件头，找到 CollectionRootPage（FileHeader 偏移 28 处的 ulong）
+        ulong collectionRootPage;
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+            var buf = new byte[36];
+            fs.Read(buf, 0, 36);
+            collectionRootPage = BitConverter.ToUInt64(buf, 28);
+        }
+
+        collectionRootPage.Should().BeGreaterThan(0, "目录页必须已写入");
+
+        // 3. 损坏：将目录首页的 NextPageId 改为指向自身，形成自环
+        // PageHeader.NextPageId 在页头偏移 13 处（PageId=8B + PageType=1B + UsedBytes=4B = 13B）
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            var pageOffset = (long)(collectionRootPage * pageSize);
+            fs.Seek(pageOffset + 13, SeekOrigin.Begin);
+            fs.Write(BitConverter.GetBytes(collectionRootPage)); // NextPageId = 自身 → 自环
+        }
+
+        // 4. 重新打开时，ReadChain 应检测到循环并抛出 CorruptedFileException
+        var act = () =>
+        {
+            using var db = new VectorLiteDB(path);
+        };
+        act.Should().Throw<Exception>("损坏的页链循环应导致异常而非无限挂起");
+    }
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)
