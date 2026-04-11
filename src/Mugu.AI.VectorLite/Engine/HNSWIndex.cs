@@ -126,8 +126,15 @@ internal sealed class HNSWIndex
     {
         if (_graph.IsEmpty) return [];
 
-        var ep = _graph.EntryPointId;
-        var L = _graph.MaxLayer;
+        // 原子读取入口点与最大层级：两个字段各自 volatile，但需同时一致，
+        // 用极短的 lock 区段消除高并发Insert时的撕裂窗口（主搜索路径仍无锁）
+        ulong ep;
+        int L;
+        lock (_writeLock)
+        {
+            ep = _graph.EntryPointId;
+            L = _graph.MaxLayer;
+        }
 
         // 阶段1：贪心下降到第 1 层
         for (var lc = L; lc >= 1; lc--)

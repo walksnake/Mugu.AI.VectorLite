@@ -107,6 +107,46 @@ public class ConcurrencyFixTests
         }
     }
 
+    // ===== P2-NEW-1：HNSWIndex.Search 原子读取入口点与层数 =====
+
+    [Fact]
+    public async Task HNSWIndex_ConcurrentInsertAndSearch_ShouldNeverReturnFalseEmpty()
+    {
+        // 验证高并发 Insert + Search 不会因入口点/层数撕裂而产生假性空结果
+        var distFunc = DistanceFunctionFactory.Get(DistanceMetric.Cosine);
+        var index = new HNSWIndex(distFunc, m: 8, efConstruction: 50);
+
+        // 预先插入10个节点，确保图非空
+        for (var i = 1; i <= 10; i++)
+            index.Insert((ulong)i, new float[] { i, 0, 0, 0 });
+
+        var falseEmptyCount = 0;
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+        // 持续 Insert 线程（模拟写入压力）
+        var insertTask = Task.Run(() =>
+        {
+            var id = 100UL;
+            while (!cts.Token.IsCancellationRequested)
+                index.Insert(id++, new float[] { (float)(id % 100), 0, 0, 0 });
+        }, cts.Token);
+
+        // 持续 Search 线程（验证不返回假性空结果）
+        var searchTask = Task.Run(() =>
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                var results = index.Search(new float[] { 1, 0, 0, 0 }, topK: 3, efSearch: 10);
+                // 图中有节点时，搜索结果不应为空
+                if (results.Count == 0) Interlocked.Increment(ref falseEmptyCount);
+            }
+        }, cts.Token);
+
+        try { await Task.WhenAll(insertTask, searchTask); } catch (OperationCanceledException) { }
+
+        falseEmptyCount.Should().Be(0, "原子读入口点后，非空图的搜索不应返回空结果");
+    }
+
     [Fact]
     public async Task VectorLiteDB_ConcurrentOperationsWhileDisposing_ShouldNotCrash()
     {

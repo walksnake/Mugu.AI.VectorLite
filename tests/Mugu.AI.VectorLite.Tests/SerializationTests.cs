@@ -270,6 +270,23 @@ public class SerializationTests
            .WithMessage("*字段名长度异常*");
     }
 
+    // ===== P2-NEW-2：ScalarIndexSerializer recordCount 上限校验 =====
+
+    [Fact]
+    public void ScalarIndexSerializer_CorruptedRecordCount_ShouldThrow()
+    {
+        // 构造 recordCount = 0xFFFFFFFF（约43亿）的损坏数据
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true);
+        bw.Write((byte)1);          // 版本号
+        bw.Write(uint.MaxValue);    // recordCount 超过 10_000_000 上限
+        bw.Flush();
+
+        var act = () => ScalarIndexSerializer.Deserialize(ms.ToArray());
+        act.Should().Throw<CorruptedFileException>()
+           .WithMessage("*记录数超出上限*");
+    }
+
     // ===== HNSW 索引序列化/反序列化 =====
 
     [Fact]

@@ -177,16 +177,8 @@ internal sealed class FileStorage : IDisposable
         /// <summary>释放页</summary>
         public void FreePage(ulong pageId) => _storage.FreePage(_txId, pageId);
 
-        /// <summary>写入完整页数据</summary>
+        /// <summary>写入完整页数据（经由 WAL 保证持久性）</summary>
         public void WritePage(ulong pageId, ReadOnlySpan<byte> fullPageData)
             => _storage.WritePage(_txId, pageId, fullPageData);
-
-        /// <summary>写入页头</summary>
-        public void WritePageHeader(ulong pageId, in PageHeader header)
-            => _storage.PageManager.WritePageHeader(pageId, header);
-
-        /// <summary>写入页数据区域</summary>
-        public void WritePageData(ulong pageId, ReadOnlySpan<byte> data)
-            => _storage.PageManager.WritePageData(pageId, data);
     }
 }
