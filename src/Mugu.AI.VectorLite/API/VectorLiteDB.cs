@@ -17,7 +17,7 @@ public sealed class VectorLiteDB : IDisposable
     private readonly ReaderWriterLockSlim _rwLock = new();
     private readonly Timer? _checkpointTimer;
     private int _checkpointRunning;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     /// <summary>数据库文件路径</summary>
     public string FilePath { get; }
@@ -129,8 +129,13 @@ public sealed class VectorLiteDB : IDisposable
             if (!_collections.TryGetValue(name, out var collection))
                 return false;
 
+            // 将集合删除操作写入逻辑 WAL，确保崩溃后不会"死而复生"
+            var walData = RecordSerializer.SerializeDeleteCollection(name);
+            _storage.LogLogicalOperation(WalOperationType.CollectionDelete, walData);
+
             // 释放集合的所有页链
             FreeCollectionPages(collection);
+            collection.Dispose();
             _collections.Remove(name);
 
             _logger?.LogInformation("删除集合: {Name}", name);
@@ -203,6 +208,11 @@ public sealed class VectorLiteDB : IDisposable
             _rwLock.ExitWriteLock();
         }
 
+        // 释放所有集合持有的锁资源
+        foreach (var (_, collection) in _collections)
+        {
+            collection.Dispose();
+        }
         _storage.Dispose();
         _rwLock.Dispose();
 
@@ -276,6 +286,18 @@ public sealed class VectorLiteDB : IDisposable
                         _logger?.LogWarning(
                             "逻辑恢复：集合 '{Name}' 不存在，跳过 RecordDelete",
                             collectionName);
+                    }
+                    break;
+                }
+                case WalOperationType.CollectionDelete:
+                {
+                    var collectionName = RecordSerializer.DeserializeDeleteCollection(record.Data);
+                    if (_collections.TryGetValue(collectionName, out var collection))
+                    {
+                        FreeCollectionPages(collection);
+                        collection.Dispose();
+                        _collections.Remove(collectionName);
+                        _logger?.LogInformation("逻辑恢复：删除集合 '{Name}'", collectionName);
                     }
                     break;
                 }

@@ -56,6 +56,10 @@ internal static class ScalarIndexSerializer
             throw new CorruptedFileException($"不支持的标量索引序列化版本: {version}（仅支持 v1）");
 
         var recordCount = br.ReadUInt32();
+        // 防止损坏文件中超大记录数导致 int 溢出或 OOM
+        const uint MaxRecordCount = 10_000_000;
+        if (recordCount > MaxRecordCount)
+            throw new CorruptedFileException($"记录数超出上限: {recordCount} > {MaxRecordCount}，可能文件已损坏");
         var recordMetadata = new Dictionary<ulong, Dictionary<string, object>>((int)recordCount);
 
         for (var i = 0u; i < recordCount; i++)
@@ -67,6 +71,9 @@ internal static class ScalarIndexSerializer
             for (var j = 0u; j < fieldCount; j++)
             {
                 var nameLen = br.ReadUInt32();
+                // 防止文件损坏时分配超大内存
+                if (nameLen == 0 || nameLen > 4096)
+                    throw new CorruptedFileException($"字段名长度异常: {nameLen}，可能文件已损坏");
                 var nameBytes = br.ReadBytes((int)nameLen);
                 var fieldName = Encoding.UTF8.GetString(nameBytes);
                 var value = ReadValue(br);

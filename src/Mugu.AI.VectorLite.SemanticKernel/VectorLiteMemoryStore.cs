@@ -10,7 +10,7 @@ public sealed class VectorLiteMemoryStore : IMemoryStore, IDisposable
 {
     private readonly VectorLiteDB _db;
     private readonly bool _ownsDb;
-    private readonly Dictionary<string, int> _collectionDimensions = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _collectionDimensions = new();
 
     /// <summary>创建新实例，内部创建并管理 VectorLiteDB</summary>
     public VectorLiteMemoryStore(string filePath, VectorLiteOptions? options = null)
@@ -50,7 +50,7 @@ public sealed class VectorLiteMemoryStore : IMemoryStore, IDisposable
     public Task DeleteCollectionAsync(string collectionName, CancellationToken ct = default)
     {
         _db.DeleteCollection(collectionName);
-        _collectionDimensions.Remove(collectionName);
+        _collectionDimensions.TryRemove(collectionName, out _);
         return Task.CompletedTask;
     }
 

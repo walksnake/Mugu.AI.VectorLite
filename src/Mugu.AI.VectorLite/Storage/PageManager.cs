@@ -213,11 +213,18 @@ internal sealed class PageManager : IDisposable
         };
         WritePageHeader(pageId, newHeader);
 
-        // 清零数据区域
-        var zeros = new byte[UsablePageSize];
-        WritePageData(pageId, zeros);
+        // 清零数据区域（使用 ArrayPool 减少 GC 压力）
+        var zeros = System.Buffers.ArrayPool<byte>.Shared.Rent(UsablePageSize);
+        try
+        {
+            Array.Clear(zeros, 0, UsablePageSize);
+            WritePageData(pageId, zeros.AsSpan(0, UsablePageSize));
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(zeros);
+        }
 
-        FlushHeader();
         return pageId;
     }
 
@@ -240,7 +247,6 @@ internal sealed class PageManager : IDisposable
         };
         WritePageHeader(pageId, freeHeader);
         _header.FreePageListHead = pageId;
-        FlushHeader();
     }
 
     /// <summary>刷新文件头到磁盘</summary>
@@ -251,6 +257,22 @@ internal sealed class PageManager : IDisposable
             MemoryMarshal.CreateReadOnlySpan(in _header, 1));
         _accessor!.WriteArray(0, bytes.ToArray(), 0, FileHeader.SizeInBytes);
         _accessor.Flush();
+    }
+
+    /// <summary>将当前内存中的文件头序列化为字节数组（不写磁盘，供 WAL 日志使用）</summary>
+    internal byte[] SerializeCurrentHeader()
+    {
+        _header.UpdateChecksum();
+        return MemoryMarshal.AsBytes(
+            MemoryMarshal.CreateReadOnlySpan(in _header, 1)).ToArray();
+    }
+
+    /// <summary>从 mmap 重新读取文件头到内存（WAL 重放后调用，使 _header 与磁盘一致）</summary>
+    internal void ReloadHeader()
+    {
+        var headerBytes = new byte[FileHeader.SizeInBytes];
+        _accessor!.ReadArray(0, headerBytes, 0, FileHeader.SizeInBytes);
+        _header = MemoryMarshal.Read<FileHeader>(headerBytes);
     }
 
     /// <summary>刷新所有内存映射数据到磁盘</summary>

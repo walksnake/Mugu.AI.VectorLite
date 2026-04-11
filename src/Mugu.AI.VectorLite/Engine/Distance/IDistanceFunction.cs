@@ -4,7 +4,7 @@ namespace Mugu.AI.VectorLite.Engine.Distance;
 /// 向量距离计算接口。所有实现必须保证线程安全（无状态纯函数）。
 /// 返回值语义统一为：值越小表示越相似。
 /// </summary>
-internal interface IDistanceFunction
+public interface IDistanceFunction
 {
     /// <summary>距离度量类型</summary>
     DistanceMetric Metric { get; }

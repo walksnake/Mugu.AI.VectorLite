@@ -38,14 +38,6 @@ internal static class MemoryRecordMapper
         var skKey = record.Metadata?.GetValueOrDefault(SkKeyField)?.ToString() ?? record.Id.ToString();
         var additionalMeta = record.Metadata?.GetValueOrDefault("_sk_additional")?.ToString() ?? string.Empty;
 
-        var metadata = new MemoryRecordMetadata(
-            isReference: false,
-            id: skKey,
-            text: record.Text ?? string.Empty,
-            description: string.Empty,
-            externalSourceName: string.Empty,
-            additionalMetadata: additionalMeta);
-
         return MemoryRecord.LocalRecord(
             id: skKey,
             text: record.Text ?? string.Empty,

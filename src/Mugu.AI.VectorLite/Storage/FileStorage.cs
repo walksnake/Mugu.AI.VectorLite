@@ -76,6 +76,10 @@ internal sealed class FileStorage : IDisposable
     {
         var pageId = _pageManager.AllocatePage(type);
         _wal.LogPageAlloc(txId, pageId, type);
+        // 将 FileHeader（FreePageListHead 等）的变更也写入 WAL，
+        // 确保崩溃恢复时能正确重放空闲链表状态
+        var headerBytes = _pageManager.SerializeCurrentHeader();
+        _wal.LogPageWrite(txId, 0, headerBytes);
         return pageId;
     }
 
@@ -85,6 +89,9 @@ internal sealed class FileStorage : IDisposable
         // 先记录WAL，再实际释放
         _wal.LogPageFree(txId, pageId);
         _pageManager.FreePage(pageId);
+        // 将 FileHeader 的 FreePageListHead 变更写入 WAL
+        var headerBytes = _pageManager.SerializeCurrentHeader();
+        _wal.LogPageWrite(txId, 0, headerBytes);
     }
 
     /// <summary>写入完整页数据（通过 WAL 记录）</summary>
@@ -170,16 +177,8 @@ internal sealed class FileStorage : IDisposable
         /// <summary>释放页</summary>
         public void FreePage(ulong pageId) => _storage.FreePage(_txId, pageId);
 
-        /// <summary>写入完整页数据</summary>
+        /// <summary>写入完整页数据（经由 WAL 保证持久性）</summary>
         public void WritePage(ulong pageId, ReadOnlySpan<byte> fullPageData)
             => _storage.WritePage(_txId, pageId, fullPageData);
-
-        /// <summary>写入页头</summary>
-        public void WritePageHeader(ulong pageId, in PageHeader header)
-            => _storage.PageManager.WritePageHeader(pageId, header);
-
-        /// <summary>写入页数据区域</summary>
-        public void WritePageData(ulong pageId, ReadOnlySpan<byte> data)
-            => _storage.PageManager.WritePageData(pageId, data);
     }
 }

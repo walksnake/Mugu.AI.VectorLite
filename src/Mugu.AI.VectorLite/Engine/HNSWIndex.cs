@@ -126,8 +126,15 @@ internal sealed class HNSWIndex
     {
         if (_graph.IsEmpty) return [];
 
-        var ep = _graph.EntryPointId;
-        var L = _graph.MaxLayer;
+        // 原子读取入口点与最大层级：两个字段各自 volatile，但需同时一致，
+        // 用极短的 lock 区段消除高并发Insert时的撕裂窗口（主搜索路径仍无锁）
+        ulong ep;
+        int L;
+        lock (_writeLock)
+        {
+            ep = _graph.EntryPointId;
+            L = _graph.MaxLayer;
+        }
 
         // 阶段1：贪心下降到第 1 层
         for (var lc = L; lc >= 1; lc--)
@@ -235,14 +242,11 @@ internal sealed class HNSWIndex
     {
         var index = new HNSWIndex(distFunc, m, efConstruction);
 
-        const int MaxNodeCount = 100_000_000;  // 1亿节点上限
-        const int MaxDimensions = 100_000;     // 向量维度上限
-        const int MaxLayerCount = 64;          // 层数上限
-        const uint MaxNeighborCount = 10_000;  // 单层邻居数上限
+        const int MaxNodeCount = 100_000_000;
+        const int MaxLayerCount = 64;
 
         var offset = 0;
 
-        // 读取并验证版本号
         if (data.Length < 1)
             throw new StorageException("HNSW 索引数据为空");
         var version = data[offset];
@@ -267,61 +271,70 @@ internal sealed class HNSWIndex
 
         for (uint i = 0; i < nodeCount; i++)
         {
-            if (offset + 13 > data.Length)
-                throw new StorageException($"HNSW 数据截断: 节点 {i}, offset={offset}");
-
-            var recordId = BinaryPrimitives.ReadUInt64LittleEndian(data[offset..]);
-            offset += 8;
-            var maxLayer = BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
-            offset += 4;
-            if (maxLayer < 0 || maxLayer > MaxLayerCount)
-                throw new StorageException($"节点 {recordId} 层数异常: {maxLayer}");
-            var isDeleted = data[offset] != 0;
-            offset += 1;
-
-            if (offset + 4 > data.Length)
-                throw new StorageException($"HNSW 数据截断: 节点 {recordId} 维度区域");
-            var dimensions = BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
-            offset += 4;
-            if (dimensions <= 0 || dimensions > MaxDimensions)
-                throw new StorageException($"节点 {recordId} 维度异常: {dimensions}");
-            if (offset + dimensions * 4 > data.Length)
-                throw new StorageException($"HNSW 数据截断: 节点 {recordId} 向量数据");
-            var vector = new float[dimensions];
-            for (var d = 0; d < dimensions; d++)
-            {
-                vector[d] = BinaryPrimitives.ReadSingleLittleEndian(data[offset..]);
-                offset += 4;
-            }
-
-            var node = new HNSWNode(recordId, maxLayer, vector)
-            {
-                IsDeleted = isDeleted
-            };
-
-            for (var layer = 0; layer <= maxLayer; layer++)
-            {
-                if (offset + 4 > data.Length)
-                    throw new StorageException($"HNSW 数据截断: 节点 {recordId} 层 {layer} 邻居头");
-                var neighborCount = BinaryPrimitives.ReadUInt32LittleEndian(data[offset..]);
-                offset += 4;
-                if (neighborCount > MaxNeighborCount)
-                    throw new StorageException($"节点 {recordId} 层 {layer} 邻居数异常: {neighborCount}");
-                if (offset + (long)neighborCount * 8 > data.Length)
-                    throw new StorageException($"HNSW 数据截断: 节点 {recordId} 层 {layer} 邻居数据");
-                for (uint n = 0; n < neighborCount; n++)
-                {
-                    var nId = BinaryPrimitives.ReadUInt64LittleEndian(data[offset..]);
-                    offset += 8;
-                    node.Neighbors[layer].Add(nId);
-                }
-            }
-
-            index._graph.Nodes[recordId] = node;
-            if (isDeleted) index._graph.DeletedCount++;
+            var node = ReadNodeFromData(data, ref offset);
+            index._graph.Nodes[node.RecordId] = node;
+            if (node.IsDeleted) index._graph.DeletedCount++;
         }
 
         return index;
+    }
+
+    /// <summary>从字节数据中读取单个 HNSW 节点（含向量和邻居列表）</summary>
+    private static HNSWNode ReadNodeFromData(ReadOnlySpan<byte> data, ref int offset)
+    {
+        const int MaxDimensions = 100_000;
+        const int MaxLayerCount = 64;
+        const uint MaxNeighborCount = 10_000;
+
+        if (offset + 13 > data.Length)
+            throw new StorageException($"HNSW 数据截断: 节点头部，offset={offset}");
+
+        var recordId = BinaryPrimitives.ReadUInt64LittleEndian(data[offset..]);
+        offset += 8;
+        var maxLayer = BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
+        offset += 4;
+        if (maxLayer < 0 || maxLayer > MaxLayerCount)
+            throw new StorageException($"节点 {recordId} 层数异常: {maxLayer}");
+        var isDeleted = data[offset] != 0;
+        offset += 1;
+
+        if (offset + 4 > data.Length)
+            throw new StorageException($"HNSW 数据截断: 节点 {recordId} 维度区域");
+        var dimensions = BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
+        offset += 4;
+        if (dimensions <= 0 || dimensions > MaxDimensions)
+            throw new StorageException($"节点 {recordId} 维度异常: {dimensions}");
+        if (offset + dimensions * 4 > data.Length)
+            throw new StorageException($"HNSW 数据截断: 节点 {recordId} 向量数据");
+
+        var vector = new float[dimensions];
+        for (var d = 0; d < dimensions; d++)
+        {
+            vector[d] = BinaryPrimitives.ReadSingleLittleEndian(data[offset..]);
+            offset += 4;
+        }
+
+        var node = new HNSWNode(recordId, maxLayer, vector) { IsDeleted = isDeleted };
+
+        for (var layer = 0; layer <= maxLayer; layer++)
+        {
+            if (offset + 4 > data.Length)
+                throw new StorageException($"HNSW 数据截断: 节点 {recordId} 层 {layer} 邻居头");
+            var neighborCount = BinaryPrimitives.ReadUInt32LittleEndian(data[offset..]);
+            offset += 4;
+            if (neighborCount > MaxNeighborCount)
+                throw new StorageException($"节点 {recordId} 层 {layer} 邻居数异常: {neighborCount}");
+            if (offset + (long)neighborCount * 8 > data.Length)
+                throw new StorageException($"HNSW 数据截断: 节点 {recordId} 层 {layer} 邻居数据");
+            for (uint n = 0; n < neighborCount; n++)
+            {
+                var nId = BinaryPrimitives.ReadUInt64LittleEndian(data[offset..]);
+                offset += 8;
+                node.Neighbors[layer].Add(nId);
+            }
+        }
+
+        return node;
     }
 
     /// <summary>

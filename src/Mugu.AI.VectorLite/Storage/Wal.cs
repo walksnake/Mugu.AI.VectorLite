@@ -181,13 +181,9 @@ internal sealed class Wal : IDisposable
             if (records.Count == 0)
                 return;
 
-            var committedTxIds = new HashSet<ulong>();
-            foreach (var record in records)
-            {
-                if (record.OperationType == WalOperationType.TxCommit)
-                    committedTxIds.Add(record.TransactionId);
-            }
+            var committedTxIds = CollectCommittedTxIds(records);
 
+            // 重放已提交的物理页写入
             var replayed = 0;
             foreach (var record in records)
             {
@@ -202,50 +198,15 @@ internal sealed class Wal : IDisposable
             if (replayed > 0)
             {
                 pageManager.Flush();
-                pageManager.FlushHeader();
+                // 重放完成后重新从 mmap 加载文件头，确保内存中的 _header 与磁盘状态一致
+                pageManager.ReloadHeader();
             }
 
-            // 收集已提交的逻辑记录
-            var logicalRecords = new List<(WalOperationType OpType, byte[] Data)>();
-            foreach (var record in records)
-            {
-                if (IsLogicalOperation(record.OperationType)
-                    && committedTxIds.Contains(record.TransactionId))
-                {
-                    logicalRecords.Add((record.OperationType, record.Data ?? []));
-                }
-            }
-
-            // 原子重写 WAL：先写临时文件再替换，确保逻辑记录不丢失
-            var tempPath = FilePath + ".tmp";
-            ulong tempSeq = 0;
-            ulong tempTxId = 0;
-            using (var tempStream = new FileStream(tempPath, FileMode.Create,
-                FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
-            {
-                WriteRecordToStream(tempStream, ref tempSeq, 0,
-                    WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
-
-                foreach (var (opType, data) in logicalRecords)
-                {
-                    var txId = ++tempTxId;
-                    WriteRecordToStream(tempStream, ref tempSeq, txId,
-                        WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
-                    WriteRecordToStream(tempStream, ref tempSeq, txId,
-                        opType, 0, data);
-                    WriteRecordToStream(tempStream, ref tempSeq, txId,
-                        WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
-                }
-
-                tempStream.Flush(true);
-            }
-
-            _walStream.Close();
-            File.Move(tempPath, FilePath, overwrite: true);
-            _walStream = new FileStream(FilePath, FileMode.OpenOrCreate,
-                FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.WriteThrough);
-            _nextSequenceNumber = tempSeq;
-            _nextTransactionId = tempTxId;
+            // 收集已提交的逻辑记录，原子重写 WAL 保留这些记录
+            var logicalRecords = CollectLogicalRecords(records, committedTxIds);
+            RewriteWalWithLogicalRecords(logicalRecords, out var newSeq, out var newTxId);
+            _nextSequenceNumber = newSeq;
+            _nextTransactionId = newTxId;
 
             _logger?.LogInformation(
                 "WAL 恢复完成: 重放 {PhysCount} 个页写入, 保留 {LogCount} 条逻辑记录",
@@ -461,7 +422,70 @@ internal sealed class Wal : IDisposable
 
     /// <summary>判断操作类型是否为逻辑操作</summary>
     private static bool IsLogicalOperation(WalOperationType opType)
-        => opType == WalOperationType.RecordInsert || opType == WalOperationType.RecordDelete;
+        => opType == WalOperationType.RecordInsert
+        || opType == WalOperationType.RecordDelete
+        || opType == WalOperationType.CollectionDelete;
+
+    /// <summary>从 WAL 记录列表中收集已提交的事务ID集合</summary>
+    private static HashSet<ulong> CollectCommittedTxIds(List<WalRecord> records)
+    {
+        var committed = new HashSet<ulong>();
+        foreach (var r in records)
+        {
+            if (r.OperationType == WalOperationType.TxCommit)
+                committed.Add(r.TransactionId);
+        }
+        return committed;
+    }
+
+    /// <summary>从记录中收集已提交的逻辑操作（RecordInsert / RecordDelete / CollectionDelete）</summary>
+    private static List<(WalOperationType OpType, byte[] Data)> CollectLogicalRecords(
+        List<WalRecord> records, HashSet<ulong> committedTxIds)
+    {
+        var result = new List<(WalOperationType, byte[])>();
+        foreach (var r in records)
+        {
+            if (IsLogicalOperation(r.OperationType) && committedTxIds.Contains(r.TransactionId))
+                result.Add((r.OperationType, r.Data ?? []));
+        }
+        return result;
+    }
+
+    /// <summary>原子重写 WAL 文件，保留逻辑记录，丢弃已处理的物理事务</summary>
+    private void RewriteWalWithLogicalRecords(
+        List<(WalOperationType OpType, byte[] Data)> logicalRecords,
+        out ulong newSeq, out ulong newTxId)
+    {
+        var tempPath = FilePath + ".tmp";
+        ulong tempSeq = 0;
+        ulong tempTxId = 0;
+        using (var tempStream = new FileStream(tempPath, FileMode.Create,
+            FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+        {
+            WriteRecordToStream(tempStream, ref tempSeq, 0,
+                WalOperationType.Checkpoint, 0, ReadOnlySpan<byte>.Empty);
+
+            foreach (var (opType, data) in logicalRecords)
+            {
+                var txId = ++tempTxId;
+                WriteRecordToStream(tempStream, ref tempSeq, txId,
+                    WalOperationType.TxBegin, 0, ReadOnlySpan<byte>.Empty);
+                WriteRecordToStream(tempStream, ref tempSeq, txId,
+                    opType, 0, data);
+                WriteRecordToStream(tempStream, ref tempSeq, txId,
+                    WalOperationType.TxCommit, 0, ReadOnlySpan<byte>.Empty);
+            }
+
+            tempStream.Flush(true);
+        }
+
+        _walStream.Close();
+        File.Move(tempPath, FilePath, overwrite: true);
+        _walStream = new FileStream(FilePath, FileMode.OpenOrCreate,
+            FileAccess.ReadWrite, FileShare.Read, 4096, FileOptions.WriteThrough);
+        newSeq = tempSeq;
+        newTxId = tempTxId;
+    }
 
     /// <summary>逻辑 WAL 记录（对外暴露，用于恢复）</summary>
     internal struct LogicalWalRecord

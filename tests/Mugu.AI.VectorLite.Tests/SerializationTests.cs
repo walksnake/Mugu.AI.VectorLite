@@ -250,6 +250,43 @@ public class SerializationTests
         act.Should().Throw<CorruptedFileException>();
     }
 
+    // ===== P3-5：字段名长度校验 =====
+
+    [Fact]
+    public void ScalarIndexSerializer_CorruptedFieldNameLength_ShouldThrow()
+    {
+        // 构造含超长字段名长度的损坏数据
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true);
+        bw.Write((byte)1);   // 版本号
+        bw.Write(1u);        // 1 条记录
+        bw.Write(1UL);       // recordId = 1
+        bw.Write(1u);        // 1 个字段
+        bw.Write(999_999u);  // nameLen 超过 4096 上限
+        bw.Flush();
+
+        var act = () => ScalarIndexSerializer.Deserialize(ms.ToArray());
+        act.Should().Throw<CorruptedFileException>()
+           .WithMessage("*字段名长度异常*");
+    }
+
+    // ===== P2-NEW-2：ScalarIndexSerializer recordCount 上限校验 =====
+
+    [Fact]
+    public void ScalarIndexSerializer_CorruptedRecordCount_ShouldThrow()
+    {
+        // 构造 recordCount = 0xFFFFFFFF（约43亿）的损坏数据
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true);
+        bw.Write((byte)1);          // 版本号
+        bw.Write(uint.MaxValue);    // recordCount 超过 10_000_000 上限
+        bw.Flush();
+
+        var act = () => ScalarIndexSerializer.Deserialize(ms.ToArray());
+        act.Should().Throw<CorruptedFileException>()
+           .WithMessage("*记录数超出上限*");
+    }
+
     // ===== HNSW 索引序列化/反序列化 =====
 
     [Fact]
