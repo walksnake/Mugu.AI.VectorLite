@@ -24,6 +24,9 @@ public sealed class VectorLiteDB : IDisposable
     /// <exception cref="CollectionException">名称已存在但维度不匹配时抛出</exception>
     public ICollection GetOrCreateCollection(string name, int dimensions);
 
+    /// <summary>获取或创建不维护 HNSW 的纯标量集合</summary>
+    public ICollection GetOrCreateScalarCollection(string name);
+
     /// <summary>获取已有集合（不存在时返回 null）</summary>
     public ICollection? GetCollection(string name);
 
@@ -44,6 +47,50 @@ public sealed class VectorLiteDB : IDisposable
     public void Dispose();
 }
 ```
+
+## 纯标量查询与 Scalar-only 集合
+
+`ICollection.Filter()` 创建完全绕开 HNSW 的查询，支持现有过滤表达式、
+多字段稳定排序、固定大小 TopK、字段投影和游标分页。
+
+```csharp
+var page = await collection.Filter()
+    .Where("partition", "A")
+    .OrderBy("priority", SortDirection.Descending)
+    .ThenBy("updatedAt", SortDirection.Descending)
+    .TopK(20)
+    .Select(RecordProjection.Metadata | RecordProjection.Text)
+    .ToPageAsync();
+```
+
+投影结果使用 `RecordView`，未请求的字段保持 `null`。`GetBatchAsync` 在单个
+读锁范围内按输入 ID 顺序批量物化。
+
+```csharp
+var events = db.GetOrCreateScalarCollection("events");
+await events.InsertScalarAsync(new ScalarRecord
+{
+    Metadata = new() { ["sequence"] = 42L },
+    Text = "事件正文"
+});
+```
+
+Scalar-only 集合不维护或持久化 HNSW。错误混用向量与标量写入 API 时抛出
+`CollectionException`。
+
+## 显式标量索引
+
+```csharp
+await events.CreateScalarIndexAsync(new ScalarIndexDefinition
+{
+    Name = "ix_sequence",
+    Type = ScalarIndexType.Ordered,
+    Fields = ["sequence"]
+});
+```
+
+索引定义随检查点持久化。字符串仍只支持精确匹配，不提供模糊、前缀、包含、
+分词或全文检索。
 
 ### 关键行为说明
 

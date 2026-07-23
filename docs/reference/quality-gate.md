@@ -1,5 +1,17 @@
 # 质量门禁参考
 
+## 纯标量检索基准
+
+`ScalarQueryBenchmark` 覆盖 1K/10K 的等值 Top20 与有序范围 Top20；
+`ScalarMaterializationBenchmark` 对比冷态元数据投影和文本批量物化分配。
+
+```bash
+dotnet run --project tests/Mugu.AI.VectorLite.QualityGate -c Release -- \
+  --filter "*ScalarQuery*"
+```
+
+兼容参数 `--benchmark` 会在交给 BenchmarkDotNet 前移除，因此旧命令也可用。
+
 > 本章详述功能基线测试和性能基准的使用方法、阈值配置、扩展方式。
 
 ---

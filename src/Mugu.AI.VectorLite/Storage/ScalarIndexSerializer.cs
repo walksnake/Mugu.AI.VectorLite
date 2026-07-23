@@ -21,7 +21,7 @@ internal static class ScalarIndexSerializer
         using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
 
         // 版本号
-        bw.Write((byte)1);
+        bw.Write((byte)2);
 
         var metadata = index.RecordMetadata;
         bw.Write((uint)metadata.Count);
@@ -40,6 +40,11 @@ internal static class ScalarIndexSerializer
             }
         }
 
+        var definitions = index.Definitions;
+        bw.Write((uint)definitions.Count);
+        foreach (var definition in definitions)
+            WriteDefinition(bw, definition);
+
         bw.Flush();
         return ms.ToArray();
     }
@@ -52,8 +57,8 @@ internal static class ScalarIndexSerializer
 
         // 读取并验证版本号
         var version = br.ReadByte();
-        if (version != 1)
-            throw new CorruptedFileException($"不支持的标量索引序列化版本: {version}（仅支持 v1）");
+        if (version is not (1 or 2))
+            throw new CorruptedFileException($"不支持的标量索引序列化版本: {version}");
 
         var recordCount = br.ReadUInt32();
         // 防止损坏文件中超大记录数导致 int 溢出或 OOM
@@ -85,7 +90,37 @@ internal static class ScalarIndexSerializer
 
         var index = new ScalarIndex();
         index.BulkLoad(recordMetadata);
+        if (version >= 2)
+        {
+            var definitionCount = br.ReadUInt32();
+            var definitions = new List<ScalarIndexDefinition>((int)definitionCount);
+            for (var i = 0u; i < definitionCount; i++)
+                definitions.Add(ReadDefinition(br));
+            index.LoadDefinitions(definitions);
+        }
         return index;
+    }
+
+    private static void WriteDefinition(BinaryWriter writer, ScalarIndexDefinition definition)
+    {
+        writer.Write(definition.Name);
+        writer.Write((byte)definition.Type);
+        writer.Write(definition.Fields.Count);
+        foreach (var field in definition.Fields)
+            writer.Write(field);
+    }
+
+    private static ScalarIndexDefinition ReadDefinition(BinaryReader reader)
+    {
+        var name = reader.ReadString();
+        var type = (ScalarIndexType)reader.ReadByte();
+        var fieldCount = reader.ReadInt32();
+        if (fieldCount is < 1 or > 32)
+            throw new CorruptedFileException($"标量索引字段数量异常: {fieldCount}");
+        var fields = new string[fieldCount];
+        for (var i = 0; i < fieldCount; i++)
+            fields[i] = reader.ReadString();
+        return new ScalarIndexDefinition { Name = name, Type = type, Fields = fields };
     }
 
     private static void WriteValue(BinaryWriter writer, object value)

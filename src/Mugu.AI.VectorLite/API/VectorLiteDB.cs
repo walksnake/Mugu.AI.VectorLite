@@ -58,6 +58,16 @@ public sealed class VectorLiteDB : IDisposable
 
     /// <summary>获取或创建集合</summary>
     public ICollection GetOrCreateCollection(string name, int dimensions)
+        => GetOrCreateCollectionCore(name, dimensions, CollectionMode.Vector);
+
+    /// <summary>获取或创建不维护 HNSW 的纯标量集合。</summary>
+    public ICollection GetOrCreateScalarCollection(string name)
+        => GetOrCreateCollectionCore(name, 1, CollectionMode.ScalarOnly);
+
+    private ICollection GetOrCreateCollectionCore(
+        string name,
+        int dimensions,
+        CollectionMode mode)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("集合名不能为空", nameof(name));
@@ -70,14 +80,14 @@ public sealed class VectorLiteDB : IDisposable
             EnsureNotDisposed();
             if (_collections.TryGetValue(name, out var existing))
             {
-                if (existing.Dimensions != dimensions)
+                if (existing.Dimensions != dimensions || existing.Mode != mode)
                     throw new CollectionException(
-                        $"集合 '{name}' 已存在但维度不匹配: 期望 {existing.Dimensions}，请求 {dimensions}");
+                        $"集合 '{name}' 已存在，但维度或集合模式不匹配");
                 return existing;
             }
 
             var collection = new Collection(name, dimensions, _options,
-                _storage, _options.LoggerFactory?.CreateLogger<Collection>());
+                _storage, _options.LoggerFactory?.CreateLogger<Collection>(), mode);
             _collections[name] = collection;
 
             _logger?.LogInformation("创建集合: {Name}, 维度={Dimensions}", name, dimensions);
@@ -343,6 +353,8 @@ public sealed class VectorLiteDB : IDisposable
                 HNSWRootPage = collection.HnswRootPage,
                 ScalarIndexRootPage = collection.ScalarIndexRootPage,
                 TextStoreRootPage = collection.TextStoreRootPage
+                ,
+                Mode = collection.Mode
             });
         }
 

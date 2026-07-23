@@ -4,6 +4,33 @@
 >
 > 命名空间：`Mugu.AI.VectorLite.Engine`
 
+过滤表达式既可用于 `Query(vector)` 的混合查询，也可用于 `Filter()` 的
+纯标量查询。后者不接受查询向量，也不会访问 HNSW。
+
+## 纯标量排序、TopK 与分页
+
+纯标量查询在元数据上完成过滤和排序，仅对最终 TopK 物化请求的字段。
+多个 `Where` 自动按 AND 组合，AND 子条件按估算结果基数从小到大执行。
+
+```csharp
+var firstPage = await collection.Filter()
+    .OrderBy("priority", SortDirection.Descending)
+    .ThenBy("updatedAt", SortDirection.Descending)
+    .TopK(20)
+    .Select(RecordProjection.Metadata)
+    .ToPageAsync();
+
+var nextPage = await collection.Filter()
+    .OrderBy("priority", SortDirection.Descending)
+    .ThenBy("updatedAt", SortDirection.Descending)
+    .After(firstPage.NextCursor!)
+    .TopK(20)
+    .ToPageAsync();
+```
+
+游标包含全部排序键与记录 ID；排序不匹配时查询会被拒绝。记录 ID 始终作为
+最终稳定键。字符串过滤仍为精确匹配，不支持模糊、子串、前缀、分词或全文搜索。
+
 ---
 
 ## 过滤表达式类型总览

@@ -15,6 +15,7 @@ internal sealed class Collection : ICollection, IDisposable
     private HNSWIndex _hnswIndex;
     private ScalarIndex _scalarIndex;
     private QueryEngine _queryEngine;
+    private ScalarQueryEngine _scalarQueryEngine;
     private TextStore _textStore;
     private readonly IDistanceFunction _distFunc;
     private readonly int _efSearch;
@@ -35,16 +36,19 @@ internal sealed class Collection : ICollection, IDisposable
 
     public string Name { get; }
     public int Dimensions { get; }
-    public int Count => _hnswIndex.Count;
+    public CollectionMode Mode { get; }
+    public int Count => Mode == CollectionMode.Vector ? _hnswIndex.Count : _scalarIndex.Count;
 
     internal ulong NextRecordId => _nextRecordId;
 
     /// <summary>创建新集合</summary>
     internal Collection(string name, int dimensions, VectorLiteOptions options,
-        FileStorage? storage = null, ILogger? logger = null)
+        FileStorage? storage = null, ILogger? logger = null,
+        CollectionMode mode = CollectionMode.Vector)
     {
         Name = name;
         Dimensions = dimensions;
+        Mode = mode;
         _options = options;
         _efSearch = options.HnswEfSearch;
         _storage = storage;
@@ -55,6 +59,7 @@ internal sealed class Collection : ICollection, IDisposable
         _scalarIndex = new ScalarIndex();
         _textStore = new TextStore();
         _queryEngine = new QueryEngine(_hnswIndex, _scalarIndex, _distFunc);
+        _scalarQueryEngine = new ScalarQueryEngine(_scalarIndex);
     }
 
     /// <summary>从快照加载集合（私有构造）</summary>
@@ -62,10 +67,11 @@ internal sealed class Collection : ICollection, IDisposable
         string name, int dimensions, VectorLiteOptions options, FileStorage storage,
         HNSWIndex hnswIndex, ScalarIndex scalarIndex, TextStore textStore,
         ulong nextRecordId, ulong hnswRootPage, ulong scalarIndexRootPage, ulong textStoreRootPage,
-        ILogger? logger)
+        ILogger? logger, CollectionMode mode)
     {
         Name = name;
         Dimensions = dimensions;
+        Mode = mode;
         _options = options;
         _efSearch = options.HnswEfSearch;
         _storage = storage;
@@ -76,6 +82,7 @@ internal sealed class Collection : ICollection, IDisposable
         _scalarIndex = scalarIndex;
         _textStore = textStore;
         _queryEngine = new QueryEngine(_hnswIndex, _scalarIndex, _distFunc);
+        _scalarQueryEngine = new ScalarQueryEngine(_scalarIndex);
         _nextRecordId = nextRecordId;
         HnswRootPage = hnswRootPage;
         ScalarIndexRootPage = scalarIndexRootPage;
@@ -96,7 +103,7 @@ internal sealed class Collection : ICollection, IDisposable
 
         // 加载 HNSW 索引
         HNSWIndex hnswIndex;
-        if (entry.HNSWRootPage != 0)
+        if (entry.Mode == CollectionMode.Vector && entry.HNSWRootPage != 0)
         {
             var hnswData = PageChainIO.ReadChain(storage, entry.HNSWRootPage);
             hnswIndex = HNSWIndex.Deserialize(hnswData, distFunc);
@@ -127,12 +134,13 @@ internal sealed class Collection : ICollection, IDisposable
             entry.Name, entry.Dimensions, options, storage,
             hnswIndex, scalarIndex, textStore,
             entry.NextRecordId, entry.HNSWRootPage, entry.ScalarIndexRootPage, entry.TextStoreRootPage,
-            logger);
+            logger, entry.Mode);
     }
 
     public Task<ulong> InsertAsync(VectorRecord record, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.Vector, "向量写入");
 
         if (record.Vector.Length != Dimensions)
             throw new DimensionMismatchException(Dimensions, record.Vector.Length);
@@ -168,7 +176,7 @@ internal sealed class Collection : ICollection, IDisposable
             _hnswIndex.Insert(id, record.Vector);
             hnswInserted = true;
 
-            _scalarIndex.Add(id, record.Metadata);
+            _scalarIndex.AddRecord(id, record.Metadata);
             scalarAdded = true;
 
             _textStore.SetPending(id, record.Text);
@@ -192,6 +200,7 @@ internal sealed class Collection : ICollection, IDisposable
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.Vector, "向量批量写入");
 
         var recordList = records.ToList();
         foreach (var record in recordList)
@@ -220,11 +229,42 @@ internal sealed class Collection : ICollection, IDisposable
     public Task<VectorRecord?> GetAsync(ulong id, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.Vector, "向量记录读取");
         _rwLock.EnterReadLock();
         try
         {
             var record = AssembleRecord(id);
             return Task.FromResult(record);
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
+    }
+
+    public Task<IReadOnlyList<RecordView>> GetBatchAsync(
+        IEnumerable<ulong> ids,
+        RecordProjection projection = RecordProjection.All,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ct.ThrowIfCancellationRequested();
+        _rwLock.EnterReadLock();
+        try
+        {
+            var idList = ids.ToList();
+            var texts = projection.HasFlag(RecordProjection.Text)
+                ? _textStore.GetTexts(idList)
+                : null;
+            var results = new List<RecordView>();
+            foreach (var id in idList)
+            {
+                ct.ThrowIfCancellationRequested();
+                var record = AssembleRecordView(id, projection, texts);
+                if (record is not null)
+                    results.Add(record);
+            }
+            return Task.FromResult<IReadOnlyList<RecordView>>(results);
         }
         finally
         {
@@ -272,7 +312,10 @@ internal sealed class Collection : ICollection, IDisposable
     /// <summary>删除核心逻辑（调用者必须持有写锁）</summary>
     private bool DeleteCore(ulong id)
     {
-        if (!_hnswIndex.ContainsActiveNode(id))
+        if (Mode == CollectionMode.Vector && !_hnswIndex.ContainsActiveNode(id))
+            return false;
+        if (Mode == CollectionMode.ScalarOnly
+            && _scalarIndex.GetRecordMetadataView(id) is null)
             return false;
 
         // 先写逻辑 WAL
@@ -282,7 +325,8 @@ internal sealed class Collection : ICollection, IDisposable
             _storage.LogLogicalOperation(WalOperationType.RecordDelete, walData);
         }
 
-        _hnswIndex.MarkDeleted(id);
+        if (Mode == CollectionMode.Vector)
+            _hnswIndex.MarkDeleted(id);
         _scalarIndex.Remove(id);
         _textStore.Remove(id);
         IsDirty = true;
@@ -296,9 +340,8 @@ internal sealed class Collection : ICollection, IDisposable
         _rwLock.EnterReadLock();
         try
         {
-            var filter = new EqualFilter(field, value);
-            var ids = _scalarIndex.Filter(filter);
-            return Task.FromResult<IReadOnlyList<ulong>>(ids.ToList());
+            var ids = _scalarIndex.GetRecordIdsView(field, value);
+            return Task.FromResult<IReadOnlyList<ulong>>(ids.ToArray());
         }
         finally
         {
@@ -310,6 +353,7 @@ internal sealed class Collection : ICollection, IDisposable
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.Vector, "向量更新");
 
         if (record.Vector.Length != Dimensions)
             throw new DimensionMismatchException(Dimensions, record.Vector.Length);
@@ -341,10 +385,116 @@ internal sealed class Collection : ICollection, IDisposable
 
     public IQueryBuilder Query(float[] queryVector)
     {
+        EnsureMode(CollectionMode.Vector, "向量查询");
         if (queryVector.Length != Dimensions)
             throw new DimensionMismatchException(Dimensions, queryVector.Length);
 
         return new QueryBuilder(this, queryVector);
+    }
+
+    public IScalarQueryBuilder Filter() => new ScalarQueryBuilder(this);
+
+    public Task<ulong> InsertScalarAsync(ScalarRecord record, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.ScalarOnly, "纯标量写入");
+        _rwLock.EnterWriteLock();
+        try
+        {
+            return Task.FromResult(InsertScalarCore(record));
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    public Task<IReadOnlyList<ulong>> InsertScalarBatchAsync(
+        IEnumerable<ScalarRecord> records,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        ct.ThrowIfCancellationRequested();
+        EnsureMode(CollectionMode.ScalarOnly, "纯标量批量写入");
+        var items = records.ToList();
+        _rwLock.EnterWriteLock();
+        try
+        {
+            var ids = new List<ulong>(items.Count);
+            foreach (var record in items)
+            {
+                ct.ThrowIfCancellationRequested();
+                ids.Add(InsertScalarCore(record));
+            }
+            return Task.FromResult<IReadOnlyList<ulong>>(ids);
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    public Task CreateScalarIndexAsync(
+        ScalarIndexDefinition definition,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        _rwLock.EnterWriteLock();
+        try
+        {
+            _scalarIndex.CreateIndex(definition);
+            IsDirty = true;
+            return Task.CompletedTask;
+        }
+        finally
+        {
+            _rwLock.ExitWriteLock();
+        }
+    }
+
+    public Task<IReadOnlyList<ScalarIndexDefinition>> ListScalarIndexesAsync(
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        _rwLock.EnterReadLock();
+        try
+        {
+            return Task.FromResult(_scalarIndex.Definitions);
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
+    }
+
+    internal Task<ScalarQueryPage> ExecuteScalarQueryAsync(
+        ScalarQueryRequest request,
+        CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        _rwLock.EnterReadLock();
+        try
+        {
+            var result = _scalarQueryEngine.Execute(request, ct);
+            var texts = request.Projection.HasFlag(RecordProjection.Text)
+                ? _textStore.GetTexts(result.RecordIds)
+                : null;
+            var records = result.RecordIds
+                .Select(id => AssembleRecordView(id, request.Projection, texts))
+                .Where(record => record is not null)
+                .Cast<RecordView>()
+                .ToArray();
+            return Task.FromResult(new ScalarQueryPage
+            {
+                Records = records,
+                NextCursor = result.NextCursor
+            });
+        }
+        finally
+        {
+            _rwLock.ExitReadLock();
+        }
     }
 
     /// <summary>由 QueryBuilder 调用，执行实际的混合查询</summary>
@@ -404,6 +554,78 @@ internal sealed class Collection : ICollection, IDisposable
         };
     }
 
+    private RecordView? AssembleRecordView(
+        ulong id,
+        RecordProjection projection,
+        IReadOnlyDictionary<ulong, string?>? texts = null)
+    {
+        var metadata = _scalarIndex.GetRecordMetadataView(id);
+        if (metadata is null)
+            return null;
+        var vector = ReadProjectedVector(id, projection);
+        if (Mode == CollectionMode.Vector && vector is null
+            && projection.HasFlag(RecordProjection.Vector))
+        {
+            return null;
+        }
+        return new RecordView
+        {
+            Id = id,
+            Vector = vector,
+            Metadata = projection.HasFlag(RecordProjection.Metadata)
+                ? new Dictionary<string, object>(metadata)
+                : null,
+            Text = ReadProjectedText(id, projection, texts)
+        };
+    }
+
+    private string? ReadProjectedText(
+        ulong id,
+        RecordProjection projection,
+        IReadOnlyDictionary<ulong, string?>? texts)
+    {
+        if (!projection.HasFlag(RecordProjection.Text))
+            return null;
+        return texts is not null && texts.TryGetValue(id, out var text)
+            ? text
+            : _textStore.GetText(id);
+    }
+
+    private float[]? ReadProjectedVector(ulong id, RecordProjection projection)
+    {
+        if (Mode != CollectionMode.Vector || !projection.HasFlag(RecordProjection.Vector))
+            return null;
+        var node = _hnswIndex.GetNode(id);
+        return node is null || node.IsDeleted ? null : node.Vector.ToArray();
+    }
+
+    private ulong InsertScalarCore(ScalarRecord record)
+    {
+        var id = _nextRecordId++;
+        if (_storage != null)
+        {
+            var persisted = new VectorRecord
+            {
+                Vector = [],
+                Metadata = record.Metadata,
+                Text = record.Text
+            };
+            var walData = RecordSerializer.SerializeInsert(Name, id, persisted);
+            _storage.LogLogicalOperation(WalOperationType.RecordInsert, walData);
+        }
+        _scalarIndex.AddRecord(id, record.Metadata);
+        _textStore.SetPending(id, record.Text);
+        IsDirty = true;
+        return id;
+    }
+
+    private void EnsureMode(CollectionMode expected, string operation)
+    {
+        if (Mode != expected)
+            throw new CollectionException(
+                $"集合 '{Name}' 的模式为 {Mode}，不支持{operation}");
+    }
+
     /// <summary>幂等地重放 WAL 插入记录</summary>
     internal void ReplayInsert(VectorRecord record)
     {
@@ -411,15 +633,19 @@ internal sealed class Collection : ICollection, IDisposable
         try
         {
             // 幂等：如果节点已存在且活跃，跳过（使用 ContainsActiveNode 避免重复插入已删除节点）
-            if (_hnswIndex.ContainsActiveNode(record.Id))
+            if (Mode == CollectionMode.Vector && _hnswIndex.ContainsActiveNode(record.Id))
+                return;
+            if (Mode == CollectionMode.ScalarOnly
+                && _scalarIndex.GetRecordMetadataView(record.Id) is not null)
                 return;
 
             // 确保 nextRecordId 不回退
             if (record.Id >= _nextRecordId)
                 _nextRecordId = record.Id + 1;
 
-            _hnswIndex.Insert(record.Id, record.Vector);
-            _scalarIndex.Add(record.Id, record.Metadata);
+            if (Mode == CollectionMode.Vector)
+                _hnswIndex.Insert(record.Id, record.Vector);
+            _scalarIndex.AddRecord(record.Id, record.Metadata);
             _textStore.SetPending(record.Id, record.Text);
             IsDirty = true;
         }
@@ -435,10 +661,14 @@ internal sealed class Collection : ICollection, IDisposable
         _rwLock.EnterWriteLock();
         try
         {
-            if (!_hnswIndex.ContainsActiveNode(recordId))
+            if (Mode == CollectionMode.Vector && !_hnswIndex.ContainsActiveNode(recordId))
+                return;
+            if (Mode == CollectionMode.ScalarOnly
+                && _scalarIndex.GetRecordMetadataView(recordId) is null)
                 return;
 
-            _hnswIndex.MarkDeleted(recordId);
+            if (Mode == CollectionMode.Vector)
+                _hnswIndex.MarkDeleted(recordId);
             _scalarIndex.Remove(recordId);
             _textStore.Remove(recordId);
             IsDirty = true;
@@ -458,11 +688,11 @@ internal sealed class Collection : ICollection, IDisposable
         _rwLock.EnterWriteLock();
         try
         {
-            if (!IsDirty && HnswRootPage != 0)
+            if (!IsDirty && (Mode == CollectionMode.ScalarOnly || HnswRootPage != 0))
                 return;
 
             // 检查是否需要对 HNSW 图进行压缩（已删除节点超过20%时重建索引）
-            if (_hnswIndex.NeedsCompaction())
+            if (Mode == CollectionMode.Vector && _hnswIndex.NeedsCompaction())
             {
                 _logger?.LogInformation("集合 '{Name}' 触发 HNSW 图压缩，当前删除比例超过20%", Name);
                 CompactHnswIndex();
@@ -476,9 +706,11 @@ internal sealed class Collection : ICollection, IDisposable
             try
             {
                 // 先序列化所有数据（在释放旧页链之前，TextStore 可能需要从旧页链读取）
-                var hnswData = _hnswIndex.Serialize();
+                var hnswData = Mode == CollectionMode.Vector ? _hnswIndex.Serialize() : [];
                 var scalarData = ScalarIndexSerializer.Serialize(_scalarIndex);
-                var activeIds = _hnswIndex.GetActiveNodeIds();
+                var activeIds = Mode == CollectionMode.Vector
+                    ? _hnswIndex.GetActiveNodeIds()
+                    : _scalarIndex.GetAllRecordIds();
                 var textData = _textStore.Serialize(activeIds);
 
                 storage.WriteTransaction(ctx =>
@@ -492,7 +724,9 @@ internal sealed class Collection : ICollection, IDisposable
                         PageChainIO.FreeChain(ctx, storage, TextStoreRootPage);
 
                     // 写入新页链
-                    HnswRootPage = PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData);
+                    HnswRootPage = Mode == CollectionMode.Vector
+                        ? PageChainIO.WriteChain(ctx, storage, PageType.HNSWGraph, hnswData)
+                        : 0;
                     ScalarIndexRootPage = PageChainIO.WriteChain(ctx, storage, PageType.ScalarIndex, scalarData);
                     TextStoreRootPage = PageChainIO.WriteChain(ctx, storage, PageType.TextData, textData);
                 });
