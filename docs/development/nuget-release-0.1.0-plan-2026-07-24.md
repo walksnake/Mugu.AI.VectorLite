@@ -1,7 +1,7 @@
 # NuGet 0.1.0 发布计划
 
 > 日期：2026-07-24
-> 状态：执行中
+> 状态：已完成
 > 发布源：NuGet.org
 
 ## 1. 发布范围
@@ -26,3 +26,15 @@
 - 不覆盖已存在的包版本。
 - 不在控制台输出 API Key。
 - 不创建未经要求的 Git 标签或 GitHub Release。
+
+## 4. 发布结果
+
+- 发布脚本：`scripts/publish-nuget.ps1 -Version 0.1.0 -SkipConfirm`
+- 构建：Release，0 警告、0 错误。
+- 测试：291/291 通过，0 失败、0 跳过。
+- NuGet 推送：2 个包成功、0 个失败；两个符号包同步推送成功。
+- `Mugu.AI.VectorLite.0.1.0.nupkg`
+  - SHA256：`9DDD6D809B41017219DC939E28B7951EFC031283F7897AA816D41B1B6A78A919`
+- `Mugu.AI.VectorLite.SemanticKernel.0.1.0.nupkg`
+  - SHA256：`C1D7AC1D005EB5AAB54213A8495943F0673D8D8C842E101843FE379CAD91DBFB`
+- NuGet.org 已接受上传；首次即时查询尚未看到 `0.1.0`，处于正常索引传播阶段。
