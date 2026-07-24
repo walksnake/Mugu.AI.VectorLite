@@ -135,7 +135,7 @@ public sealed class AndFilter : FilterExpression
     internal override HashSet<ulong> Evaluate(ScalarIndex index)
     {
         HashSet<ulong>? result = null;
-        foreach (var operand in Operands)
+        foreach (var operand in Operands.OrderBy(index.EstimateCount))
         {
             var ids = operand.Evaluate(index);
             if (result == null)

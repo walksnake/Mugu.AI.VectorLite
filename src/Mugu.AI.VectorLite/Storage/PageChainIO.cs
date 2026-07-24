@@ -1,5 +1,3 @@
-using System.Buffers;
-
 namespace Mugu.AI.VectorLite.Storage;
 
 /// <summary>
@@ -138,26 +136,18 @@ internal static class PageChainIO
         var offsetInPage = (int)(byteOffset % usable);
         var bytesRead = 0;
 
-        var pageData = ArrayPool<byte>.Shared.Rent(usable);
-        try
+        while (bytesRead < destination.Length && pageIndex < chainPageIds.Count)
         {
-            while (bytesRead < destination.Length && pageIndex < chainPageIds.Count)
-            {
-                var pageId = chainPageIds[pageIndex];
-                var availableInPage = usable - offsetInPage;
-                var toRead = Math.Min(destination.Length - bytesRead, availableInPage);
-
-                storage.ReadPageData(pageId, pageData.AsSpan(0, usable));
-                pageData.AsSpan(offsetInPage, toRead).CopyTo(destination.Slice(bytesRead, toRead));
-
-                bytesRead += toRead;
-                pageIndex++;
-                offsetInPage = 0;
-            }
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pageData);
+            var pageId = chainPageIds[pageIndex];
+            var availableInPage = usable - offsetInPage;
+            var toRead = Math.Min(destination.Length - bytesRead, availableInPage);
+            storage.ReadPageRange(
+                pageId,
+                offsetInPage,
+                destination.Slice(bytesRead, toRead));
+            bytesRead += toRead;
+            pageIndex++;
+            offsetInPage = 0;
         }
 
         return bytesRead;

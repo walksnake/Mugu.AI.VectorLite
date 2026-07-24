@@ -200,9 +200,9 @@ internal sealed class HNSWIndex
         // 版本号（用于未来格式升级）
         bw.Write((byte)1);
 
-        // 图元信息
+        // 图元信息（空图时 MaxLayer 写 0，避免哨兵值 -1 导致反序列化报错）
         bw.Write(_graph.EntryPointId);
-        bw.Write(_graph.MaxLayer);
+        bw.Write(_graph.Nodes.Count == 0 ? 0 : _graph.MaxLayer);
         bw.Write((uint)_graph.Nodes.Count);
 
         foreach (var node in _graph.Nodes.Values)
@@ -261,11 +261,21 @@ internal sealed class HNSWIndex
         offset += 8;
         index._graph.MaxLayer = BinaryPrimitives.ReadInt32LittleEndian(data[offset..]);
         offset += 4;
-        if (index._graph.MaxLayer < 0 || index._graph.MaxLayer > MaxLayerCount)
-            throw new StorageException($"HNSW MaxLayer 异常: {index._graph.MaxLayer}");
 
         var nodeCount = BinaryPrimitives.ReadUInt32LittleEndian(data[offset..]);
         offset += 4;
+
+        // 空图的 MaxLayer 为 -1（哨兵值），合法；非空图则需校验范围
+        if (nodeCount == 0)
+        {
+            index._graph.MaxLayer = Math.Max(0, index._graph.MaxLayer);
+        }
+        else
+        {
+            if (index._graph.MaxLayer < 0 || index._graph.MaxLayer > MaxLayerCount)
+                throw new StorageException($"HNSW MaxLayer 异常: {index._graph.MaxLayer}");
+        }
+
         if (nodeCount > MaxNodeCount)
             throw new StorageException($"HNSW 节点数超出上限: {nodeCount} > {MaxNodeCount}");
 

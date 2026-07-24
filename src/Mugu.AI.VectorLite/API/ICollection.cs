@@ -23,6 +23,12 @@ public interface ICollection
     /// <summary>根据ID获取记录</summary>
     Task<VectorRecord?> GetAsync(ulong id, CancellationToken ct = default);
 
+    /// <summary>按投影批量获取记录</summary>
+    Task<IReadOnlyList<RecordView>> GetBatchAsync(
+        IEnumerable<ulong> ids,
+        RecordProjection projection = RecordProjection.All,
+        CancellationToken ct = default);
+
     /// <summary>根据ID删除记录</summary>
     Task<bool> DeleteAsync(ulong id, CancellationToken ct = default);
 
@@ -40,4 +46,24 @@ public interface ICollection
 
     /// <summary>创建查询构建器</summary>
     IQueryBuilder Query(float[] queryVector);
+
+    /// <summary>创建不经过向量索引的纯标量查询构建器</summary>
+    IScalarQueryBuilder Filter();
+
+    /// <summary>向纯标量集合插入记录</summary>
+    Task<ulong> InsertScalarAsync(ScalarRecord record, CancellationToken ct = default);
+
+    /// <summary>向纯标量集合批量插入记录</summary>
+    Task<IReadOnlyList<ulong>> InsertScalarBatchAsync(
+        IEnumerable<ScalarRecord> records,
+        CancellationToken ct = default);
+
+    /// <summary>创建显式标量索引</summary>
+    Task CreateScalarIndexAsync(
+        ScalarIndexDefinition definition,
+        CancellationToken ct = default);
+
+    /// <summary>列出显式标量索引</summary>
+    Task<IReadOnlyList<ScalarIndexDefinition>> ListScalarIndexesAsync(
+        CancellationToken ct = default);
 }

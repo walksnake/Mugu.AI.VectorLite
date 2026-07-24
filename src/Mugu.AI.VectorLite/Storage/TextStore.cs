@@ -53,6 +53,24 @@ internal sealed class TextStore
         return ReadTextFromChain(absoluteOffset);
     }
 
+    /// <summary>批量读取文本；同一持久化页在一次调用中最多读取一次。</summary>
+    internal IReadOnlyDictionary<ulong, string?> GetTexts(IEnumerable<ulong> recordIds)
+    {
+        var ids = recordIds.Distinct().ToArray();
+        var result = new Dictionary<ulong, string?>(ids.Length);
+        var pageCache = new Dictionary<int, byte[]>();
+        foreach (var recordId in ids)
+        {
+            if (_pendingTexts.TryGetValue(recordId, out var pending))
+            {
+                result[recordId] = pending;
+                continue;
+            }
+            result[recordId] = ReadPersistedText(recordId, pageCache);
+        }
+        return result;
+    }
+
     /// <summary>检查是否含有指定记录（内存或索引）</summary>
     internal bool Contains(ulong recordId)
     {
@@ -256,5 +274,60 @@ internal sealed class TextStore
         var textBuf = new byte[textLength];
         PageChainIO.ReadAt(_storage, _chainPageIds, absoluteOffset + 4, textBuf);
         return Encoding.UTF8.GetString(textBuf);
+    }
+
+    private string? ReadPersistedText(
+        ulong recordId,
+        Dictionary<int, byte[]> pageCache)
+    {
+        if (_textOffsets is null || !_textOffsets.TryGetValue(recordId, out var offset))
+            return null;
+        var absoluteOffset = _dataSectionOffset + offset;
+        Span<byte> lengthBuffer = stackalloc byte[4];
+        ReadAtCached(absoluteOffset, lengthBuffer, pageCache);
+        var textLength = BitConverter.ToUInt32(lengthBuffer);
+        if (textLength == 0)
+            return null;
+        if (textLength > 100 * 1024 * 1024)
+            throw new StorageException($"文本长度超出上限: {textLength}");
+        var textBuffer = new byte[textLength];
+        ReadAtCached(absoluteOffset + 4, textBuffer, pageCache);
+        return Encoding.UTF8.GetString(textBuffer);
+    }
+
+    private void ReadAtCached(
+        long byteOffset,
+        Span<byte> destination,
+        Dictionary<int, byte[]> pageCache)
+    {
+        if (_storage is null || _chainPageIds is null)
+            return;
+        var pageIndex = (int)(byteOffset / _usablePageSize);
+        var offsetInPage = (int)(byteOffset % _usablePageSize);
+        var copied = 0;
+        while (copied < destination.Length)
+        {
+            var page = GetCachedPage(pageIndex, pageCache);
+            var length = Math.Min(destination.Length - copied, _usablePageSize - offsetInPage);
+            page.AsSpan(offsetInPage, length).CopyTo(destination[copied..]);
+            copied += length;
+            pageIndex++;
+            offsetInPage = 0;
+        }
+    }
+
+    private byte[] GetCachedPage(int pageIndex, Dictionary<int, byte[]> pageCache)
+    {
+        if (_storage is null || _chainPageIds is null
+            || pageIndex < 0 || pageIndex >= _chainPageIds.Count)
+        {
+            throw new CorruptedFileException("文本页链偏移超出有效范围");
+        }
+        if (pageCache.TryGetValue(pageIndex, out var cached))
+            return cached;
+        var page = new byte[_usablePageSize];
+        _storage.ReadPageRange(_chainPageIds[pageIndex], 0, page);
+        pageCache[pageIndex] = page;
+        return page;
     }
 }

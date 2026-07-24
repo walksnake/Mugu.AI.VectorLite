@@ -15,6 +15,7 @@ internal struct CollectionCatalogEntry
     internal ulong HNSWRootPage;
     internal ulong ScalarIndexRootPage;
     internal ulong TextStoreRootPage;
+    internal CollectionMode Mode;
 }
 
 /// <summary>
@@ -30,7 +31,7 @@ internal static class CollectionCatalog
         using var bw = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
 
         // 版本号
-        bw.Write((byte)1);
+        bw.Write((byte)2);
 
         bw.Write((uint)entries.Count);
 
@@ -47,6 +48,7 @@ internal static class CollectionCatalog
             bw.Write(entry.HNSWRootPage);
             bw.Write(entry.ScalarIndexRootPage);
             bw.Write(entry.TextStoreRootPage);
+            bw.Write((byte)entry.Mode);
         }
 
         bw.Flush();
@@ -61,8 +63,8 @@ internal static class CollectionCatalog
 
         // 读取并验证版本号
         var version = br.ReadByte();
-        if (version != 1)
-            throw new CorruptedFileException($"不支持的集合目录序列化版本: {version}（仅支持 v1）");
+        if (version is not (1 or 2))
+            throw new CorruptedFileException($"不支持的集合目录序列化版本: {version}");
 
         var count = br.ReadUInt32();
         var entries = new List<CollectionCatalogEntry>((int)count);
@@ -76,7 +78,7 @@ internal static class CollectionCatalog
             var nameBytes = br.ReadBytes((int)nameLen);
             var name = Encoding.UTF8.GetString(nameBytes);
 
-            entries.Add(new CollectionCatalogEntry
+            var entry = new CollectionCatalogEntry
             {
                 Name = name,
                 Dimensions = (int)br.ReadUInt32(),
@@ -86,8 +88,12 @@ internal static class CollectionCatalog
                 NextRecordId = br.ReadUInt64(),
                 HNSWRootPage = br.ReadUInt64(),
                 ScalarIndexRootPage = br.ReadUInt64(),
-                TextStoreRootPage = br.ReadUInt64()
-            });
+                TextStoreRootPage = br.ReadUInt64(),
+                Mode = CollectionMode.Vector
+            };
+            if (version >= 2)
+                entry.Mode = (CollectionMode)br.ReadByte();
+            entries.Add(entry);
         }
 
         return entries;

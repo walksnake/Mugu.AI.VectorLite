@@ -4,5 +4,8 @@
   "minInsertThroughput": 5000,
   "maxSearchP99Ms": 10,
   "maxDistanceCalcNs": 500,
-  "toleranceRatio": 0.1
+  "toleranceRatio": 0.1,
+  "maxScalarAndOrderVarianceRatio": 0.2,
+  "minOrderedRangeSpeedupRatio": 5.0,
+  "minColdTextAllocationReductionRatio": 0.8
 }

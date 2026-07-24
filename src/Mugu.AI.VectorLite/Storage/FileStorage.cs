@@ -115,6 +115,13 @@ internal sealed class FileStorage : IDisposable
         return _pageManager.ReadPageData(pageId, destination);
     }
 
+    /// <summary>直接读取页数据中的指定范围。</summary>
+    internal int ReadPageRange(ulong pageId, int offsetInData, Span<byte> destination)
+    {
+        EnsureNotDisposed();
+        return _pageManager.ReadPageRange(pageId, offsetInData, destination);
+    }
+
     /// <summary>读取完整页</summary>
     internal byte[] ReadFullPage(ulong pageId)
     {

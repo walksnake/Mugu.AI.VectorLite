@@ -509,3 +509,15 @@ if (options.CheckpointInterval != Timeout.InfiniteTimeSpan)
 - 定时器在后台线程触发，`Checkpoint()` 内部获取写锁。
 - `Dispose()` 时先停止定时器，再执行最终检查点。
 - 异常情况下（如磁盘满），检查点失败记录 Error 日志但不抛出异常（下次重试）。
+
+## 11. 纯标量查询 API
+
+`ICollection.Filter()` 返回独立的 `IScalarQueryBuilder`，执行链不进入 HNSW。
+构建器支持过滤、多字段排序、TopK、投影和稳定游标。结果使用 `RecordView`
+表达可选字段，避免空向量的歧义。
+
+`GetBatchAsync` 在集合单个读锁范围内按输入顺序组装投影结果。排序阶段只访问
+常驻元数据，文本和向量仅在最终结果集上加载。
+
+`GetOrCreateScalarCollection` 创建 `ScalarOnly` 集合。此模式使用
+`ScalarRecord` 写入并明确拒绝向量写入与查询。

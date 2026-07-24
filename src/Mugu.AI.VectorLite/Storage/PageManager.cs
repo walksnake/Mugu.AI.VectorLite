@@ -128,6 +128,34 @@ internal sealed class PageManager : IDisposable
         return length;
     }
 
+    /// <summary>直接读取页数据中的指定范围，避免为小范围读取创建整页数组。</summary>
+    internal unsafe int ReadPageRange(
+        ulong pageId,
+        int offsetInData,
+        Span<byte> destination)
+    {
+        EnsureNotDisposed();
+        ValidatePageId(pageId);
+        ArgumentOutOfRangeException.ThrowIfNegative(offsetInData);
+        if (offsetInData > UsablePageSize)
+            throw new ArgumentOutOfRangeException(nameof(offsetInData));
+
+        var length = Math.Min(destination.Length, UsablePageSize - offsetInData);
+        byte* pointer = null;
+        _accessor!.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+        try
+        {
+            var fileOffset = _accessor.PointerOffset + GetPageOffset(pageId)
+                + PageHeader.SizeInBytes + offsetInData;
+            new ReadOnlySpan<byte>(pointer + fileOffset, length).CopyTo(destination);
+        }
+        finally
+        {
+            _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+        }
+        return length;
+    }
+
     /// <summary>读取完整页（包含页头和数据）</summary>
     internal byte[] ReadFullPage(ulong pageId)
     {

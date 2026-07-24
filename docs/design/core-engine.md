@@ -517,3 +517,13 @@ internal sealed class MemoryManager : IDisposable
 - `RentVector` 返回的数组长度可能大于请求维度（`ArrayPool` 特性），调用方必须使用 `Span<float>` 切片到实际维度。
 - HNSW 搜索过程中的临时候选列表通过 `RentNeighborList` 获取，搜索完成后归还。
 - `MemoryManager` 为线程安全类（`ArrayPool` 和 `ObjectPool` 均线程安全）。
+
+## 纯标量执行补充
+
+`ScalarQueryEngine` 直接从 `ScalarIndex` 获取候选 ID，以固定大小优先队列完成
+TopK，不对全部候选完整排序。比较器依次使用显式排序键，并以记录 ID 作为最终
+稳定键。
+
+AND 过滤依据 Posting 基数估算重排，先执行预计结果最小的条件并在空集时短路。
+显式 `Ordered` 索引使用有序键结构执行范围查询；未声明字段继续使用兼容的
+哈希字段扫描。等值与 In 查询仍使用原哈希倒排索引。
