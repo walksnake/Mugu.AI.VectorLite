@@ -37,4 +37,5 @@
   - SHA256：`9DDD6D809B41017219DC939E28B7951EFC031283F7897AA816D41B1B6A78A919`
 - `Mugu.AI.VectorLite.SemanticKernel.0.1.0.nupkg`
   - SHA256：`C1D7AC1D005EB5AAB54213A8495943F0673D8D8C842E101843FE379CAD91DBFB`
-- NuGet.org 已接受上传；首次即时查询尚未看到 `0.1.0`，处于正常索引传播阶段。
+- NuGet.org 已接受上传；核心包与 Semantic Kernel 包的 `0.1.0`
+  均已在官方索引可见。
