@@ -4,13 +4,17 @@
 
 ---
 
-## 1. 添加项目引用
+## 1. 安装 NuGet 包
 
 ```xml
-<ProjectReference Include="..\..\src\Mugu.AI.VectorLite\Mugu.AI.VectorLite.csproj" />
+<PackageReference Include="Mugu.AI.VectorLite" Version="0.1.0" />
 ```
 
-> 若已发布 NuGet 包，使用 `<PackageReference Include="Mugu.AI.VectorLite" Version="x.y.z" />`。
+Semantic Kernel 适配器使用：
+
+```xml
+<PackageReference Include="Mugu.AI.VectorLite.SemanticKernel" Version="0.1.0" />
+```
 
 ## 2. 最小示例
 

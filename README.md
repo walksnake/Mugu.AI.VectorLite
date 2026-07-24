@@ -34,11 +34,7 @@
 ### 安装
 
 ```xml
-<!-- 项目引用 -->
-<ProjectReference Include="src\Mugu.AI.VectorLite\Mugu.AI.VectorLite.csproj" />
-
-<!-- 或 NuGet（发布后可用） -->
-<!-- <PackageReference Include="Mugu.AI.VectorLite" Version="x.y.z" /> -->
+<PackageReference Include="Mugu.AI.VectorLite" Version="0.1.0" />
 ```
 
 ### 最小示例

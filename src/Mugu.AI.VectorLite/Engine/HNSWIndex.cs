@@ -268,6 +268,8 @@ internal sealed class HNSWIndex
         // 空图的 MaxLayer 为 -1（哨兵值），合法；非空图则需校验范围
         if (nodeCount == 0)
         {
+            if (index._graph.MaxLayer < -1 || index._graph.MaxLayer > MaxLayerCount)
+                throw new StorageException($"HNSW MaxLayer 异常: {index._graph.MaxLayer}");
             index._graph.MaxLayer = Math.Max(0, index._graph.MaxLayer);
         }
         else

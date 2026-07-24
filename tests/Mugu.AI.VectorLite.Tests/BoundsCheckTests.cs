@@ -60,6 +60,20 @@ public class BoundsCheckTests
     }
 
     [Fact]
+    public void HNSWDeserialize_EmptyGraphSentinelLayer_ShouldLoad()
+    {
+        var data = new byte[1 + 16];
+        data[0] = 1; // 版本号
+        BinaryPrimitives.WriteUInt64LittleEndian(data.AsSpan(1), 0);
+        BinaryPrimitives.WriteInt32LittleEndian(data.AsSpan(9), -1);
+        BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(13), 0);
+
+        var act = () => HNSWIndex.Deserialize(data.AsSpan(), CosineFunc);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
     public void RecordSerializer_ExcessiveDimensions_ShouldThrow()
     {
         using var ms = new MemoryStream();
